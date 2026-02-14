@@ -1,0 +1,60 @@
+# LLM & RAG Framework
+openai
+anthropic
+google-genai
+huggingface_hub  # Only for embeddings
+
+# Vector Stores & Embeddings
+chromadb
+pinecone-client
+faiss-cpu
+sentence-transformers
+FlagEmbedding  # BGE-M3 multi-representation (dense, sparse, ColBERT)
+
+# Document Parsing & Ingestion
+unstructured[pdf,docx,xlsx]
+PyMuPDF  # Fast PDF loading (10x faster than unstructured for PDFs)
+python-magic-bin  # Windows: Provides libmagic DLL for file type detection
+python-docx
+openpyxl
+pdf2image
+pytesseract
+beautifulsoup4
+lxml
+pillow
+
+# Data Processing
+pandas
+numpy
+scikit-learn
+
+# Web Framework & APIs
+Flask
+FastAPI
+python-multipart
+uvicorn
+requests
+aiohttp
+
+# Database
+sqlalchemy
+psycopg2-binary
+
+# Text Processing & NLP
+nltk
+spacy
+transformers
+
+# Configuration & Environment
+python-dotenv
+pydantic
+pydantic-settings
+
+# Logging & Monitoring
+structlog
+python-logging-loki
+
+# Utilities
+tqdm
+click
+pyyaml

@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+        sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* Custom Scrollbar for File Previews */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.4);
+}
+
+/* Markdown Styling */
+.prose {
+    color: inherit;
+}
+
+.prose p {
+    margin: 0.75em 0;
+}
+
+.prose p:first-child {
+    margin-top: 0;
+}
+
+.prose p:last-child {
+    margin-bottom: 0;
+}
+
+.prose code {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+.prose pre {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 1em;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 1em 0;
+}
+
+.prose pre code {
+    background: none;
+    padding: 0;
+}
+
+.prose ul, .prose ol {
+    margin: 0.75em 0;
+    padding-left: 1.5em;
+}
+
+.prose li {
+    margin: 0.25em 0;
+}
+
+.prose h1, .prose h2, .prose h3, .prose h4 {
+    margin: 1em 0 0.5em 0;
+    font-weight: 600;
+}
+
+.prose blockquote {
+    border-left: 3px solid rgba(255, 255, 255, 0.3);
+    padding-left: 1em;
+    margin: 1em 0;
+    font-style: italic;
+}
+
+/* Animations */
+@keyframes bounce {
+    0%, 100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(-5px);
+    }
+}
+
+.animate-bounce {
+    animation: bounce 1s infinite;
+}
+
+/* Text Truncate */
+.line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
