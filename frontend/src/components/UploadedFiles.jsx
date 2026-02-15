@@ -1,4 +1,16 @@
+import { useState, useEffect } from 'react';
+
 export default function UploadedFiles({ files, onProcess, isProcessing, isProcessed }) {
+    const [collapsed, setCollapsed] = useState(false);
+
+    // Auto-collapse 2 seconds after processing completes
+    useEffect(() => {
+        if (isProcessed && !collapsed) {
+            const timer = setTimeout(() => setCollapsed(true), 2000);
+            return () => clearTimeout(timer);
+        }
+    }, [isProcessed]);
+
     if (files.length === 0) return null;
 
     const getFileIcon = (fileName) => {
@@ -27,11 +39,27 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
     };
 
     return (
-        <div className="bg-[#40414F] border border-white/20 rounded-lg p-3 sm:p-4 mb-3">
-            <div className="flex items-center justify-between mb-2 sm:mb-3 gap-2">
-                <span className="text-xs sm:text-sm text-white font-medium">
-                    📁 Uploaded Files ({files.length})
-                </span>
+        <div className="bg-[#40414F] border border-white/20 rounded-lg mb-3 transition-all duration-300 overflow-hidden">
+            {/* Header - always visible, clickable to expand/collapse when processed */}
+            <div
+                className={`flex items-center justify-between p-3 sm:p-4 gap-2 ${isProcessed ? 'cursor-pointer hover:bg-white/5' : ''}`}
+                onClick={isProcessed ? () => setCollapsed(prev => !prev) : undefined}
+            >
+                <div className="flex items-center gap-2">
+                    {isProcessed && collapsed && (
+                        <svg className="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                    )}
+                    {isProcessed && !collapsed && (
+                        <svg className="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                    )}
+                    <span className="text-xs sm:text-sm text-white font-medium">
+                        📁 {collapsed ? `${files.length} file${files.length !== 1 ? 's' : ''} processed` : `Uploaded Files (${files.length})`}
+                    </span>
+                </div>
                 {isProcessed ? (
                     <div className="flex items-center gap-1 sm:gap-2 text-green-400 text-xs sm:text-sm flex-shrink-0">
                         <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -61,32 +89,37 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
                 )}
             </div>
             
-            {isProcessing && (
-                <div className="mb-2 sm:mb-3 px-2 sm:px-3 py-1.5 sm:py-2 bg-blue-500/10 border border-blue-500/30 rounded-md">
-                    <p className="text-xs sm:text-sm text-blue-300">⏳ Please wait for a while...</p>
+            {/* Collapsible content */}
+            {!collapsed && (
+                <div className="px-3 sm:px-4 pb-3 sm:pb-4">
+                    {isProcessing && (
+                        <div className="mb-2 sm:mb-3 px-2 sm:px-3 py-1.5 sm:py-2 bg-blue-500/10 border border-blue-500/30 rounded-md">
+                            <p className="text-xs sm:text-sm text-blue-300">⏳ Please wait for a while...</p>
+                        </div>
+                    )}
+
+                    {/* File list with max 3 visible, scroll for more */}
+                    <div className="space-y-1.5 sm:space-y-2 max-h-[120px] sm:max-h-[150px] overflow-y-auto pr-1 sm:pr-2 custom-scrollbar">
+                        {files.map((file, index) => (
+                            <div
+                                key={index}
+                                className="flex items-center gap-2 sm:gap-3 p-1.5 sm:p-2 bg-[#343541] rounded-md"
+                            >
+                                <span className="text-base sm:text-xl flex-shrink-0">{getFileIcon(file.fileName)}</span>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs sm:text-sm text-white truncate">{file.fileName}</p>
+                                    <p className="text-[10px] sm:text-xs text-gray-400">{formatFileSize(file.fileSize)}</p>
+                                </div>
+                                <div className="flex-shrink-0">
+                                    <svg className="w-4 h-4 sm:w-5 sm:h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
-
-            {/* File list with max 3 visible, scroll for more */}
-            <div className="space-y-1.5 sm:space-y-2 max-h-[120px] sm:max-h-[150px] overflow-y-auto pr-1 sm:pr-2 custom-scrollbar">
-                {files.map((file, index) => (
-                    <div
-                        key={index}
-                        className="flex items-center gap-2 sm:gap-3 p-1.5 sm:p-2 bg-[#343541] rounded-md"
-                    >
-                        <span className="text-base sm:text-xl flex-shrink-0">{getFileIcon(file.fileName)}</span>
-                        <div className="flex-1 min-w-0">
-                            <p className="text-xs sm:text-sm text-white truncate">{file.fileName}</p>
-                            <p className="text-[10px] sm:text-xs text-gray-400">{formatFileSize(file.fileSize)}</p>
-                        </div>
-                        <div className="flex-shrink-0">
-                            <svg className="w-4 h-4 sm:w-5 sm:h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                        </div>
-                    </div>
-                ))}
-            </div>
         </div>
     );
 }
