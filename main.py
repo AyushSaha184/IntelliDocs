@@ -20,7 +20,7 @@ from pathlib import Path
 import argparse
 from datetime import datetime
 import time
-import numpy as np 
+import numpy as np
 import json
 import psycopg2
 import shutil
@@ -276,19 +276,16 @@ class RAGPipeline:
             use_reranker=USE_RERANKER
         )
         
-        self.processing_stats: Dict[str, float] = {
-            "step_1_load_documents": 0.0,
-            "step_2_chunk_documents": 0.0,
-            "step_3_generate_embeddings": 0.0,
-            "step_4_build_vector_store": 0.0,
-            "total_documents": 0.0,
-            "total_chunks": 0.0,
-            "total_vectors": 0.0,
-            "total_time_seconds": 0.0
+        self.processing_stats = {
+            "step_1_load_documents": 0,
+            "step_2_chunk_documents": 0,
+            "step_3_generate_embeddings": 0,
+            "step_4_build_vector_store": 0,
+            "total_documents": 0,
+            "total_chunks": 0,
+            "total_vectors": 0,
+            "total_time_seconds": 0
         }
-        
-        # Legacy/Non-scalable compatibility
-        self.all_chunks: Dict[str, List[TextChunk]] = {}
         
         logger.info("Enterprise RAG Pipeline initialized with DB backends")
     
