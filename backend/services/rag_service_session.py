@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.Retriever import RAGRetriever, LMStudioReranker
+from src.modules.Retriever import RAGRetriever, LMStudioReranker, LocalCrossEncoderReranker
 from src.modules.QueryGeneration import QueryHandler, QueryResult
 from src.modules.LLM import create_llm
 from src.utils.Logger import get_logger
@@ -24,6 +24,7 @@ from config.config import (
     EMBEDDING_TIMEOUT,
     EMBEDDING_MAX_RETRIES,
     USE_RERANKER,
+    RERANKER_PROVIDER,
     RERANKER_MODEL,
     MIN_CHUNKS_TO_RERANK,
     TOP_K_AFTER_RERANK,
@@ -48,7 +49,12 @@ _reranker_lock = threading.Lock()
 
 
 def _get_shared_reranker():
-    """Get or create shared LM Studio reranker instance (thread-safe)."""
+    """Get or create shared reranker instance (thread-safe).
+    
+    Uses RERANKER_PROVIDER to choose between:
+      - 'lm-studio': Calls LM Studio /v1/rerank endpoint (local dev)
+      - 'local': In-process CrossEncoder (Docker / Render deployment)
+    """
     global _shared_reranker
     if not USE_RERANKER:
         return None
@@ -56,13 +62,23 @@ def _get_shared_reranker():
     if _shared_reranker is None:
         with _reranker_lock:
             if _shared_reranker is None:
-                _shared_reranker = LMStudioReranker(
-                    base_url=LM_STUDIO_BASE_URL,
-                    model=RERANKER_MODEL,
-                    min_chunks_to_rerank=MIN_CHUNKS_TO_RERANK,
-                    top_k_after_rerank=TOP_K_AFTER_RERANK
-                )
-                logger.info(f"Initialized shared LM Studio reranker: {RERANKER_MODEL}")
+                provider = RERANKER_PROVIDER.lower()
+                if provider in ("local", "cross-encoder", "in-process"):
+                    _shared_reranker = LocalCrossEncoderReranker(
+                        model_name=RERANKER_MODEL,
+                        min_chunks_to_rerank=MIN_CHUNKS_TO_RERANK,
+                        top_k_after_rerank=TOP_K_AFTER_RERANK,
+                    )
+                    logger.info(f"Initialized local CrossEncoder reranker: {RERANKER_MODEL}")
+                else:
+                    # Default: LM Studio API
+                    _shared_reranker = LMStudioReranker(
+                        base_url=LM_STUDIO_BASE_URL,
+                        model=RERANKER_MODEL,
+                        min_chunks_to_rerank=MIN_CHUNKS_TO_RERANK,
+                        top_k_after_rerank=TOP_K_AFTER_RERANK
+                    )
+                    logger.info(f"Initialized LM Studio reranker: {RERANKER_MODEL}")
     return _shared_reranker
 
 

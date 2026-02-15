@@ -2,11 +2,11 @@
 
 from typing import Optional, List
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 from backend.database import get_db
-from backend.services.session_service import get_session_manager
+from backend.services.session_service import get_session_manager, DATA_DIR
 from backend.services.rag_service_session import ask_rag_session, get_llm_status, clear_session_handler
 from backend.rag.IngestSession import ingest_documents_session
 from src.modules.QueryGeneration import QueryResult
@@ -98,10 +98,13 @@ def process_document_async(session_id: str, session_manager):
 async def upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None),
     db: DBSession = Depends(get_db)
 ):
     """
-    Upload a document and create an isolated session.
+    Upload a document to a session.
+    If session_id is provided, adds file to existing session.
+    Otherwise, creates a new isolated session.
     Returns session_id for subsequent requests.
     """
     try:
@@ -109,7 +112,7 @@ async def upload(
         
         # Check available disk space before accepting upload
         import shutil
-        stat = shutil.disk_usage("data")
+        stat = shutil.disk_usage(str(DATA_DIR))
         available_gb = stat.free / (1024**3)
         
         if available_gb < 4.0:  # Less than 4GB available
@@ -126,12 +129,26 @@ async def upload(
         if file_size > 20 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File too large (max 20MB)")
         
-        # Create session
-        session_id = session_manager.create_session(file.filename, file_size, db)
+        # Use existing session or create new one
+        if session_id:
+            # Verify session exists
+            session = session_manager.get_session(session_id, db)
+            if not session:
+                raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+            # Reset to processing status when adding new files
+            session_manager.update_session_status(session_id, "processing", db)
+        else:
+            # Create new session
+            session_id = session_manager.create_session(file.filename, file_size, db)
         
         # Save file to session-isolated directory (prevents cross-user mixup)
         documents_dir = session_manager.get_documents_dir(session_id)
         dest_path = documents_dir / file.filename
+        
+        # Check if file already exists
+        if dest_path.exists():
+            raise HTTPException(status_code=400, detail=f"File {file.filename} already exists in this session")
+        
         with open(dest_path, "wb") as f:
             f.write(contents)
         
@@ -139,18 +156,15 @@ async def upload(
         # session isolation. Each user's files stay in their own session directory.
         # The main CLI pipeline (python main.py build) uses data/documents/ separately.
         
-        # Process in background
-        background_tasks.add_task(
-            process_document_async,
-            session_id=session_id,
-            session_manager=session_manager
-        )
+        # Don't process yet - user will click "Process" after uploading all files.
+        # Set status to "uploaded" so the frontend knows files are ready.
+        session_manager.update_session_status(session_id, "uploaded", db)
         
         return UploadResponse(
             session_id=session_id,
-            status="processing",
+            status="uploaded",
             filename=file.filename,
-            message="Document uploaded successfully. Processing in background."
+            message="Document uploaded successfully. Click Process when ready."
         )
     except HTTPException:
         raise
@@ -176,6 +190,41 @@ def get_status(session_id: str, db: DBSession = Depends(get_db)):
         chunks_count=session.chunks_count,
         error_message=session.error_message
     )
+
+
+@router.post("/process/{session_id}")
+async def process_session(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    db: DBSession = Depends(get_db)
+):
+    """
+    Trigger processing of all uploaded documents in a session.
+    Called when user clicks 'Process' after uploading all their files.
+    """
+    session_manager = get_session_manager()
+    session = session_manager.get_session(session_id, db)
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if session.status == "processing":
+        return {"session_id": session_id, "status": "processing", "message": "Already processing"}
+    
+    if session.status == "ready":
+        return {"session_id": session_id, "status": "ready", "message": "Already processed"}
+    
+    # Set status to processing
+    session_manager.update_session_status(session_id, "processing", db)
+    
+    # Kick off background ingestion of ALL files in session
+    background_tasks.add_task(
+        process_document_async,
+        session_id=session_id,
+        session_manager=session_manager
+    )
+    
+    return {"session_id": session_id, "status": "processing", "message": "Processing started for all uploaded files"}
 
 
 @router.post("/ask", response_model=AskResponse)

@@ -13,7 +13,9 @@ from datetime import datetime, timedelta
 # Ensure project root is on path so imports work
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
-os.chdir(_PROJECT_ROOT)  # Ensure 'data/' paths resolve correctly
+
+# Absolute data directory path
+DATA_DIR = _PROJECT_ROOT / "data"
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -27,7 +29,7 @@ logger = get_logger(__name__)
 
 def check_disk_space():
     """Check and display current disk usage."""
-    stat = shutil.disk_usage("data")
+    stat = shutil.disk_usage(str(DATA_DIR))
     total_gb = stat.total / (1024**3)
     used_gb = stat.used / (1024**3)
     free_gb = stat.free / (1024**3)
@@ -72,7 +74,7 @@ def analyze_storage():
     print("📁 STORAGE BREAKDOWN")
     print("="*60)
     
-    data_path = Path("data")
+    data_path = DATA_DIR
     
     folders = {
         "documents": data_path / "documents",
@@ -95,7 +97,7 @@ def analyze_storage():
 
 def cleanup_old_documents(days_old: int = 7):
     """Delete documents older than specified days."""
-    docs_dir = Path("data/documents")
+    docs_dir = DATA_DIR / "documents"
     if not docs_dir.exists():
         print("ℹ️  No documents directory found.")
         return
@@ -130,7 +132,7 @@ def cleanup_all_sessions():
         session_manager.cleanup_inactive_sessions(db)
         
         # Also clean any orphaned session directories
-        sessions_dir = Path("data/sessions")
+        sessions_dir = DATA_DIR / "sessions"
         if sessions_dir.exists():
             for session_dir in sessions_dir.iterdir():
                 if session_dir.is_dir():

@@ -49,8 +49,10 @@ HYBRID_LEXICAL_WEIGHT = float(_env("HYBRID_LEXICAL_WEIGHT", "0.2"))
 HYBRID_COLBERT_WEIGHT = float(_env("HYBRID_COLBERT_WEIGHT", "0.4"))
 RRF_K = int(_env("RRF_K", "60"))  # RRF constant (higher = more conservative)
 
-# Reranker configuration - LM Studio for local BGE-reranker-v2-m3
+# Reranker configuration
+# RERANKER_PROVIDER: "lm-studio" (calls LM Studio /v1/rerank) or "local" (in-process CrossEncoder)
 USE_RERANKER = _env("USE_RERANKER", "true").lower() == "true"
+RERANKER_PROVIDER = _env("RERANKER_PROVIDER", "lm-studio")
 RERANKER_MODEL = _env("RERANKER_MODEL", "gpustack/text-embedding-bge-reranker-v2-m3")
 MIN_CHUNKS_TO_RERANK = int(_env("MIN_CHUNKS_TO_RERANK", "8"))
 TOP_K_AFTER_RERANK = int(_env("TOP_K_AFTER_RERANK", "5"))

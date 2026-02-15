@@ -920,6 +920,72 @@ class LMStudioReranker:
             return [(i, 0.0) for i in range(min(top_k, len(documents)))]
 
 
+class LocalCrossEncoderReranker:
+    """In-process reranker using sentence-transformers CrossEncoder.
+
+    Runs BAAI/bge-reranker-v2-m3 (or similar) locally without needing
+    an external server like LM Studio. Ideal for Docker / Render deployment.
+
+    Same interface as LMStudioReranker (should_rerank / rerank).
+    """
+
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-reranker-v2-m3",
+        min_chunks_to_rerank: int = 8,
+        top_k_after_rerank: int = 5,
+        device: Optional[str] = None,
+        cache_folder: Optional[str] = None,
+    ):
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError:
+            raise ImportError(
+                "sentence-transformers not installed. Run: pip install sentence-transformers"
+            )
+
+        if device is None:
+            device = "cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu"
+
+        self.model_name = model_name
+        self.min_chunks_to_rerank = min_chunks_to_rerank
+        self.top_k_after_rerank = top_k_after_rerank
+        self.device = device
+
+        logger.info(f"Loading CrossEncoder reranker: {model_name} on {device}")
+        kwargs = {"device": device, "trust_remote_code": True}
+        if cache_folder:
+            kwargs["cache_folder"] = cache_folder
+        self._model = CrossEncoder(model_name, **kwargs)
+        logger.info("CrossEncoder reranker loaded successfully")
+
+    def should_rerank(self, num_candidates: int) -> bool:
+        return num_candidates > self.min_chunks_to_rerank
+
+    def rerank(
+        self,
+        query: str,
+        documents: List[str],
+        top_k: Optional[int] = None,
+    ) -> List[Tuple[int, float]]:
+        if not documents:
+            return []
+
+        top_k = top_k or self.top_k_after_rerank
+
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = self._model.predict(pairs, show_progress_bar=False)
+
+            indexed_scores = list(enumerate(scores.tolist()))
+            indexed_scores.sort(key=lambda x: x[1], reverse=True)
+            return indexed_scores[:top_k]
+
+        except Exception as e:
+            logger.error(f"CrossEncoder reranker error: {e}")
+            return [(i, 0.0) for i in range(min(top_k, len(documents)))]
+
+
 # ─────────────────────────────────────────────────────────────
 # Hybrid Retriever (Main Class)
 # ─────────────────────────────────────────────────────────────

@@ -1,8 +1,13 @@
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-export async function uploadDocument(file) {
+export async function uploadDocument(file, sessionId = null) {
     const formData = new FormData();
     formData.append('file', file);
+    
+    // Add session_id if provided (to add file to existing session)
+    if (sessionId) {
+        formData.append('session_id', sessionId);
+    }
 
     const response = await fetch(`${BASE_URL}/api/upload`, {
         method: 'POST',
@@ -26,6 +31,19 @@ export async function checkStatus(sessionId) {
     }
 
     return response.json(); // Returns { session_id, status, filename, chunks_count }
+}
+
+export async function processSession(sessionId) {
+    const response = await fetch(`${BASE_URL}/api/process/${sessionId}`, {
+        method: 'POST',
+    });
+
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || `Process failed (${response.status})`);
+    }
+
+    return response.json();
 }
 
 export async function askQuestion(sessionId, question, opts = {}) {

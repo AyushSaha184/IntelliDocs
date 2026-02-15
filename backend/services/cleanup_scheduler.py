@@ -7,8 +7,9 @@ Cleans up sessions based on:
 
 import threading
 import time
+from pathlib import Path
 from backend.database.models import SessionLocal
-from backend.services.session_service import get_session_manager
+from backend.services.session_service import get_session_manager, DATA_DIR
 from src.utils.Logger import get_logger
 
 logger = get_logger(__name__)
@@ -58,7 +59,7 @@ class CleanupScheduler:
         """Log disk space usage warnings."""
         try:
             import shutil
-            stat = shutil.disk_usage("data")
+            stat = shutil.disk_usage(str(DATA_DIR))
             available_gb = stat.free / (1024**3)
             used_gb = stat.used / (1024**3)
             total_gb = stat.total / (1024**3)

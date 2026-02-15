@@ -10,8 +10,13 @@ from backend.database.models import Session, get_db
 from src.utils.Logger import get_logger
 import threading
 import json
+import os
 
 logger = get_logger(__name__)
+
+# Get absolute project root (Enterprise-ai-assistant directory)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
 
 
 class SessionManager:
@@ -25,16 +30,17 @@ class SessionManager:
     Documents are also copied to data/documents/ for the main CLI pipeline.
     
     Auto-cleanup rules:
-      - Delete after 15 minutes from creation (max session duration)
-      - OR delete after 30 minutes of inactivity (no queries)
+      - Delete after 2 hours from creation (max session duration)
+      - OR delete after 1 hour of inactivity (no queries)
     """
     
-    BASE_STORAGE_DIR = Path("data/sessions")
-    CENTRAL_DOCUMENTS_DIR = Path("data/documents")  # Copy here for main pipeline
+    BASE_STORAGE_DIR = DATA_DIR / "sessions"
+    CENTRAL_DOCUMENTS_DIR = DATA_DIR / "documents"  # For main CLI pipeline
     MAX_SESSION_DURATION = timedelta(hours=2)   # Delete after 2 hours from creation
     INACTIVITY_TIMEOUT = timedelta(hours=1)     # Delete after 1 hour of no activity
     
     def __init__(self):
+        logger.info(f"SessionManager initializing with base dir: {self.BASE_STORAGE_DIR}")
         self.BASE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
         self.CENTRAL_DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
