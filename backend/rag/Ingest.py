@@ -19,5 +19,5 @@ def ingest_documents(
         vector_store_dir=vector_store_dir,
         device=device
     )
-    pipeline.build_vector_store()
+    pipeline.run_complete_pipeline()
     logger.info("Ingestion completed")

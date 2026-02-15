@@ -31,8 +31,8 @@ class SessionManager:
     
     BASE_STORAGE_DIR = Path("data/sessions")
     CENTRAL_DOCUMENTS_DIR = Path("data/documents")  # Copy here for main pipeline
-    MAX_SESSION_DURATION = timedelta(minutes=15)  # Delete after 15 min from creation
-    INACTIVITY_TIMEOUT = timedelta(minutes=30)     # Delete after 30 min no activity
+    MAX_SESSION_DURATION = timedelta(hours=2)   # Delete after 2 hours from creation
+    INACTIVITY_TIMEOUT = timedelta(hours=1)     # Delete after 1 hour of no activity
     
     def __init__(self):
         self.BASE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)

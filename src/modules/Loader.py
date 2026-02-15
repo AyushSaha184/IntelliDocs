@@ -532,10 +532,13 @@ class DocumentLoader:
         logger.info(f"Starting file discovery in {self.documents_dir}")
         
         try:
+            docs_path = Path(self.documents_dir)
             for ext in SUPPORTED_EXTENSIONS:
-                # Use glob with generator to avoid loading all paths at once
-                for file_path in Path(self.documents_dir).glob(f"**/*{ext}"):
-                    yield file_path
+                # Use rglob (recursive glob) to find files in current dir and all subdirectories
+                for file_path in docs_path.rglob(f"*{ext}"):
+                    if file_path.is_file():
+                        yield file_path
+                        logger.debug(f"Discovered file: {file_path}")
         except Exception as e:
             logger.error(f"Error during file discovery: {e}")
     

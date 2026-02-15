@@ -21,11 +21,14 @@ from config.config import (
     EMBEDDING_NORMALIZE,
     EMBEDDING_TASK_TYPE,
     EMBEDDING_DIMENSION,
+    EMBEDDING_TIMEOUT,
+    EMBEDDING_MAX_RETRIES,
     USE_RERANKER,
     RERANKER_MODEL,
     MIN_CHUNKS_TO_RERANK,
     TOP_K_AFTER_RERANK,
     LM_STUDIO_BASE_URL,
+    LM_STUDIO_API_KEY,
 )
 import threading
 
@@ -81,7 +84,16 @@ def _build_embedding_kwargs() -> dict:
             "task_type": EMBEDDING_TASK_TYPE,
             "output_dimensionality": EMBEDDING_DIMENSION
         })
+    elif EMBEDDING_PROVIDER.lower() in ["lm-studio", "lmstudio", "openai-compatible"]:
+        # LM Studio uses OpenAI-compatible API - no device parameter needed
+        kwargs.update({
+            "base_url": LM_STUDIO_BASE_URL,
+            "api_key": LM_STUDIO_API_KEY if LM_STUDIO_API_KEY else None,
+            "timeout": EMBEDDING_TIMEOUT,
+            "max_retries": EMBEDDING_MAX_RETRIES
+        })
     else:
+        # Local models (transformers) need device
         kwargs["device"] = "cpu"
 
     return kwargs

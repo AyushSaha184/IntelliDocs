@@ -36,7 +36,7 @@ def ingest_documents_session(
         device=device
     )
     
-    pipeline.build_vector_store()
+    pipeline.run_complete_pipeline()
     
     # Count chunks
     chunks_count = 0

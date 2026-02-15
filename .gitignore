@@ -55,3 +55,6 @@ output/
 .pytest_cache/
 .coverage
 htmlcov/
+
+
+RAG_Assistant\Enterprise-ai-assistant\STARTUP_GUIDE.md

@@ -135,8 +135,9 @@ async def upload(
         with open(dest_path, "wb") as f:
             f.write(contents)
         
-        # Also copy to central data/documents/ for the main CLI pipeline
-        session_manager.copy_to_central(session_id, file.filename)
+        # NOTE: We do NOT copy to central data/documents/ to ensure strict
+        # session isolation. Each user's files stay in their own session directory.
+        # The main CLI pipeline (python main.py build) uses data/documents/ separately.
         
         # Process in background
         background_tasks.add_task(
