@@ -45,9 +45,14 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
         setUploading(true);
         
         try {
-            // Upload all files
+            // Upload all files to the SAME session
+            // Track session_id locally since React state updates are async
+            let currentSessionId = null;
             for (const file of pendingFiles) {
-                await onUpload(file);
+                const result = await onUpload(file, currentSessionId);
+                if (result?.session_id) {
+                    currentSessionId = result.session_id;
+                }
             }
             
             // Clear pending files after successful upload

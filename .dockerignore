@@ -1,0 +1,19 @@
+# Dependencies
+frontend/node_modules
+__pycache__
+*.pyc
+.pytest_cache
+
+# Data (rebuilt at runtime)
+data/sessions/*
+data/documents/*
+data/chunks/*
+data/vector_store/*
+logs/*
+
+# Dev files
+.env
+.git
+.gitignore
+*.md
+.vscode

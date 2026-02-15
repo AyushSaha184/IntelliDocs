@@ -1,0 +1,59 @@
+version: "3.8"
+
+services:
+  # ── PostgreSQL Database ──
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rag_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── RAG Backend + Frontend ──
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Database (points to the 'db' service above)
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/rag_db
+
+      # Embedding: in-process sentence-transformers (no LM Studio needed)
+      EMBEDDING_PROVIDER: local
+      EMBEDDING_MODEL: BAAI/bge-m3
+
+      # Reranker: in-process CrossEncoder (no LM Studio needed)
+      RERANKER_PROVIDER: local
+      RERANKER_MODEL: BAAI/bge-reranker-v2-m3
+      USE_RERANKER: "true"
+
+      # LLM: set your API key(s) here or in .env file
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
+      # Python
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Persist session data across container restarts
+      - app_data:/app/data
+
+volumes:
+  pgdata:
+  app_data:

@@ -57,3 +57,4 @@ output/
 htmlcov/
 
 STARTUP_GUIDE.md
+docker.MD

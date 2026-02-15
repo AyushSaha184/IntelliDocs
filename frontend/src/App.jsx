@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ChatMessage from './components/ChatMessage';
 import ChatInput from './components/ChatInput';
-import { uploadDocument, checkStatus, askQuestion } from './services/api';
+import { uploadDocument, checkStatus, askQuestion, processSession } from './services/api';
 
 export default function App() {
     const [messages, setMessages] = useState([]);
@@ -47,11 +47,13 @@ export default function App() {
         }
     };
 
-    const handleUpload = async (file) => {
+    const handleUpload = async (file, existingSessionId = null) => {
         try {
-            const result = await uploadDocument(file);
+            // Use passed session_id (from ChatInput loop) or React state as fallback
+            const sid = existingSessionId || sessionId;
+            const result = await uploadDocument(file, sid);
             
-            // Store session ID
+            // Store session ID in React state
             setSessionId(result.session_id);
             
             // Add to uploaded files list
@@ -75,10 +77,13 @@ export default function App() {
         setIsProcessing(true);
         
         try {
+            // Trigger processing of ALL uploaded files in the session
+            await processSession(sessionId);
+            
             // Poll status until ready
             let status = 'processing';
             let attempts = 0;
-            const maxAttempts = 60; // 60 seconds timeout
+            const maxAttempts = 120; // 120 seconds timeout (more files = more time)
             
             while (status === 'processing' && attempts < maxAttempts) {
                 await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second

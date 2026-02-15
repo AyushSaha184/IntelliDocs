@@ -1,0 +1,100 @@
+services:
+  # PostgreSQL Database
+  - type: pserv
+    name: rag-assistant-db
+    env: docker
+    plan: free
+    region: oregon
+    ipAllowList: []
+    databases:
+      - name: rag_db
+        user: rag_user
+
+  # Web Service
+  - type: web
+    name: rag-assistant
+    env: docker
+    region: oregon
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rag-assistant-db
+          property: connectionString
+      
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: rag-assistant-db
+          property: host
+      
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: rag-assistant-db
+          property: port
+      
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: rag-assistant-db
+          property: database
+      
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: rag-assistant-db
+          property: user
+      
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: rag-assistant-db
+          property: password
+      
+      # Local Embedding Model (downloaded during Docker build)
+      - key: EMBEDDING_PROVIDER
+        value: local
+      
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-m3
+      
+      - key: EMBEDDING_MODEL_PATH
+        value: /app/models
+      
+      - key: EMBEDDING_NORMALIZE
+        value: "true"
+      
+      # OpenRouter LLM Configuration
+      - key: LLM_PROVIDER
+        value: openrouter
+      
+      - key: LLM_MODEL
+        value: anthropic/claude-3.5-sonnet
+      
+      - key: LLM_TEMPERATURE
+        value: "0.7"
+      
+      - key: LLM_MAX_TOKENS
+        value: "4000"
+      
+      - key: OPENROUTER_API_KEY
+        sync: false  # Set this manually in Render dashboard
+      
+      - key: OPENROUTER_SITE_URL
+        value: https://rag-assistant.onrender.com
+      
+      - key: OPENROUTER_SITE_NAME
+        value: RAG_Assistant
+      
+      - key: USE_RERANKER
+        value: "false"
+      
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+    # Disk storage for uploaded documents and vector store
+    # Note: Local embedding model (~3GB) is stored in container, not here
+    disk:
+      name: rag-data
+      mountPath: /app/data
+      sizeGB: 5  # Can start with 1GB for testing, increase as needed
