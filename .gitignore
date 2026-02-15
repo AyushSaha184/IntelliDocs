@@ -56,5 +56,4 @@ output/
 .coverage
 htmlcov/
 
-
-RAG_Assistant\Enterprise-ai-assistant\STARTUP_GUIDE.md
+STARTUP_GUIDE.md
