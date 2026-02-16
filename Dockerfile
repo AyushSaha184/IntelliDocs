@@ -52,12 +52,6 @@ from sentence_transformers import SentenceTransformer; \
 model = SentenceTransformer('BAAI/bge-m3'); \
 print(f'Embedding model loaded: dim={model.get_sentence_embedding_dimension()}')"
 
-# Download reranker model during build
-RUN python3 -c "\
-from sentence_transformers import CrossEncoder; \
-model = CrossEncoder('BAAI/bge-reranker-v2-m3'); \
-print('Reranker model loaded successfully')"
-
 # ── Environment variables for Render deployment ──
 # These switch from LM Studio (local dev) to in-process models (container)
 ENV PYTHONUNBUFFERED=1
@@ -82,5 +76,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:${PORT:-8000}/api/health || exit 1
 
-# Start command (uses Render's PORT env variable)
-CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Start command — shell form so ${PORT} is expanded at runtime
+CMD sh -c "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"

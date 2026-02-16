@@ -16,4 +16,7 @@ logs/*
 .git
 .gitignore
 *.md
+*.MD
 .vscode
+docker-compose.yml
+render.yaml
