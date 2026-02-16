@@ -1251,7 +1251,12 @@ Note: By default, --build clears existing databases for a fresh rebuild.
     parser.add_argument("--chunker-processes", type=int, default=None, help="Number of chunker processes for parallel mode (default: cpu_count)")
     
     # API mode arguments
-    parser.add_argument("--api-port", type=int, default=8000, help="API port (default: 8000)")
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        default=int(os.getenv("PORT", "8000")),
+        help="API port (default: PORT env or 8000)"
+    )
     
     args = parser.parse_args()
     
