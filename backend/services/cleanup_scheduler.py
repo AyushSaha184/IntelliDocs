@@ -8,7 +8,7 @@ Cleans up sessions based on:
 import threading
 import time
 from pathlib import Path
-from backend.database.models import SessionLocal
+from backend.database.models import get_session_local
 from backend.services.session_service import get_session_manager, DATA_DIR
 from src.utils.Logger import get_logger
 
@@ -78,7 +78,7 @@ class CleanupScheduler:
     
     def _cleanup(self):
         """Perform cleanup of inactive sessions."""
-        db = SessionLocal()
+        db = get_session_local()()
         try:
             session_manager = get_session_manager()
             session_manager.cleanup_inactive_sessions(db)

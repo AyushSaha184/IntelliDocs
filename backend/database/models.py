@@ -34,22 +34,39 @@ class Session(Base):
         return f"<Session(session_id={self.session_id}, status={self.status})>"
 
 
-# Database setup - PostgreSQL
-DB_URL = os.getenv("DATABASE_URL")
-if not DB_URL:
-    raise ValueError("DATABASE_URL environment variable is required")
-engine = create_engine(DB_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Database setup - PostgreSQL (lazy initialization)
+_engine = None
+_SessionLocal = None
+
+
+def get_engine():
+    """Get or create database engine."""
+    global _engine
+    if _engine is None:
+        DB_URL = os.getenv("DATABASE_URL")
+        if not DB_URL:
+            raise ValueError("DATABASE_URL environment variable is required")
+        _engine = create_engine(DB_URL)
+    return _engine
+
+
+def get_session_local():
+    """Get or create SessionLocal."""
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
+    return _SessionLocal
 
 
 def init_db():
     """Initialize database tables."""
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=get_engine())
 
 
 def get_db():
     """Dependency for database sessions."""
-    db = SessionLocal()
+    session_local = get_session_local()
+    db = session_local()
     try:
         yield db
     finally:

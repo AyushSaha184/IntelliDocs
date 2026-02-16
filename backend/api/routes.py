@@ -56,9 +56,9 @@ class SessionStatusResponse(BaseModel):
 # Background task helper
 def process_document_async(session_id: str, session_manager):
     """Background task to process uploaded document."""
-    from backend.database.models import SessionLocal
+    from backend.database.models import get_session_local
     
-    db = SessionLocal()
+    db = get_session_local()()
     try:
         documents_dir = session_manager.get_documents_dir(session_id)
         chunks_dir = session_manager.get_chunks_dir(session_id)

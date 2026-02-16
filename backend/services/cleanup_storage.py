@@ -20,7 +20,7 @@ DATA_DIR = _PROJECT_ROOT / "data"
 from dotenv import load_dotenv
 load_dotenv()
 
-from backend.database.models import SessionLocal
+from backend.database.models import get_session_local
 from backend.services.session_service import get_session_manager
 from src.utils.Logger import get_logger
 
@@ -126,7 +126,7 @@ def cleanup_all_sessions():
     """Delete all sessions (force cleanup)."""
     print("\n🗑️  Cleaning up ALL sessions...")
     
-    db = SessionLocal()
+    db = get_session_local()()
     try:
         session_manager = get_session_manager()
         session_manager.cleanup_inactive_sessions(db)
@@ -171,7 +171,7 @@ def main():
     
     if choice == "1":
         print("\n🧹 Cleaning up inactive sessions...")
-        db = SessionLocal()
+        db = get_session_local()()
         try:
             session_manager = get_session_manager()
             session_manager.cleanup_inactive_sessions(db)
