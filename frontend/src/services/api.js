@@ -1,9 +1,11 @@
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// In production (Render), frontend is served by the same server — use relative URLs.
+// In local dev, proxy to the backend on localhost:8000.
+const BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '' : 'http://localhost:8000');
 
 export async function uploadDocument(file, sessionId = null) {
     const formData = new FormData();
     formData.append('file', file);
-    
+
     // Add session_id if provided (to add file to existing session)
     if (sessionId) {
         formData.append('session_id', sessionId);
@@ -50,11 +52,11 @@ export async function askQuestion(sessionId, question, opts = {}) {
     const response = await fetch(`${BASE_URL}/api/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
             session_id: sessionId,
             question,
             top_k: opts.top_k || 5,
-            ...opts 
+            ...opts
         }),
     });
 
