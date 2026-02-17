@@ -45,8 +45,17 @@ def get_engine():
     if _engine is None:
         DB_URL = os.getenv("DATABASE_URL")
         if not DB_URL:
-            raise ValueError("DATABASE_URL environment variable is required")
-        _engine = create_engine(DB_URL)
+            # Fallback to SQLite for development/simple deployments
+            data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            DB_URL = f"sqlite:///{data_dir}/sessions.db"
+            print(f"WARNING: DATABASE_URL not set, using SQLite: {DB_URL}")
+        
+        # Handle Render.com postgres:// URL (should be postgresql://)
+        if DB_URL.startswith("postgres://"):
+            DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+        
+        _engine = create_engine(DB_URL, connect_args={"check_same_thread": False} if "sqlite" in DB_URL else {})
     return _engine
 
 
