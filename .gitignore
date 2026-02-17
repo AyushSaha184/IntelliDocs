@@ -34,6 +34,9 @@ wheels/
 .installed.cfg
 *.egg
 
+# Project documentation
+STARTUP_GUIDE.md
+
 # IDE
 .vscode/
 .idea/
@@ -55,6 +58,3 @@ output/
 .pytest_cache/
 .coverage
 htmlcov/
-
-STARTUP_GUIDE.md
-docker.MD

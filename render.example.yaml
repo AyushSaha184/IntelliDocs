@@ -1,0 +1,82 @@
+# Example Render.com Blueprint for RAG Assistant
+# Copy and edit as needed for your deployment
+# See https://render.com/docs/infrastructure-as-code for details
+
+databases:
+  - name: rag-assistant-db
+    databaseName: rag_db
+    user: rag_user
+    region: singapore
+    plan: free
+
+services:
+  - type: web
+    name: rag-assistant
+    env: docker
+    region: singapore
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerCommand: sh -c "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rag-assistant-db
+          property: connectionString
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: rag-assistant-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: rag-assistant-db
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: rag-assistant-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: rag-assistant-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: rag-assistant-db
+          property: password
+      # Gemini Embedding API (set in dashboard for production)
+      - key: EMBEDDING_PROVIDER
+        value: gemini
+      - key: EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: EMBEDDING_DIMENSION
+        value: "768"
+      - key: EMBEDDING_NORMALIZE
+        value: "true"
+      # OpenRouter LLM Configuration
+      - key: LLM_PROVIDER
+        value: openrouter
+      - key: LLM_MODEL
+        value: deepseek/deepseek-r1-0528:free
+      - key: LLM_TEMPERATURE
+        value: "0.7"
+      - key: LLM_MAX_TOKENS
+        value: "4000"
+      - key: OPENROUTER_API_KEY
+        sync: false  # Set this manually in Render dashboard
+      - key: GEMINI_API_KEY
+        sync: false  # REQUIRED — set in Render dashboard (used for embeddings)
+      - key: OPENROUTER_SITE_URL
+        value: https://rag-assistant.onrender.com
+      - key: OPENROUTER_SITE_NAME
+        value: RAG_Assistant
+      - key: USE_RERANKER
+        value: "false"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONPATH
+        value: /app
+    disk:
+      name: rag-data
+      mountPath: /app/data
+      sizeGB: 5
