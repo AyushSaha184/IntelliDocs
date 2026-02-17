@@ -36,6 +36,8 @@ wheels/
 
 # Project documentation
 STARTUP_GUIDE.md
+docker.MD
+render.yaml
 
 # IDE
 .vscode/
@@ -58,3 +60,5 @@ output/
 .pytest_cache/
 .coverage
 htmlcov/
+
+uninstall.txt
