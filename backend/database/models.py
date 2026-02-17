@@ -39,22 +39,42 @@ _engine = None
 _SessionLocal = None
 
 
+def _is_usable_db_url(url: str) -> bool:
+    """Check if a DATABASE_URL is actually usable (not a localhost URL on a remote server)."""
+    if not url:
+        return False
+    # On Render, a localhost PostgreSQL URL from .env won't work
+    is_remote = os.getenv("RENDER") or os.getenv("PORT")
+    if is_remote and ("localhost" in url or "127.0.0.1" in url):
+        return False
+    return True
+
+
+def _get_sqlite_url() -> str:
+    """Get SQLite fallback URL."""
+    data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{data_dir}/sessions.db"
+
+
 def get_engine():
     """Get or create database engine."""
     global _engine
     if _engine is None:
-        DB_URL = os.getenv("DATABASE_URL")
-        if not DB_URL:
-            # Fallback to SQLite for development/simple deployments
-            data_dir = Path(__file__).resolve().parent.parent.parent / "data"
-            data_dir.mkdir(parents=True, exist_ok=True)
-            DB_URL = f"sqlite:///{data_dir}/sessions.db"
-            print(f"WARNING: DATABASE_URL not set, using SQLite: {DB_URL}")
-        
+        raw_url = os.getenv("DATABASE_URL", "")
+        print(f"[DB] DATABASE_URL from env: {'set (' + raw_url[:30] + '...)' if raw_url else 'NOT SET'}")
+
+        if not _is_usable_db_url(raw_url):
+            DB_URL = _get_sqlite_url()
+            print(f"[DB] Falling back to SQLite: {DB_URL}")
+        else:
+            DB_URL = raw_url
+
         # Handle Render.com postgres:// URL (should be postgresql://)
         if DB_URL.startswith("postgres://"):
             DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
-        
+
+        print(f"[DB] Using database: {DB_URL[:50]}...")
         _engine = create_engine(DB_URL, connect_args={"check_same_thread": False} if "sqlite" in DB_URL else {})
     return _engine
 
