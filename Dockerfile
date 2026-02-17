@@ -26,15 +26,14 @@ RUN apt-get update && apt-get install -y \
     curl \
     libmagic1 \
     poppler-utils \
-    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy Python requirements and install
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy slim requirements and install (no PyTorch / local models)
+COPY requirements-render.txt .
+RUN pip install --no-cache-dir -r requirements-render.txt
 
 # Copy application code
 COPY . .
@@ -45,25 +44,14 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/static
 # Create necessary directories
 RUN mkdir -p data/sessions data/documents data/chunks data/vector_store logs
 
-# Download embedding model during build (saves ~2 min on cold start)
-# sentence-transformers caches to ~/.cache/torch/sentence_transformers
-RUN python3 -c "\
-from sentence_transformers import SentenceTransformer; \
-model = SentenceTransformer('BAAI/bge-m3'); \
-print(f'Embedding model loaded: dim={model.get_sentence_embedding_dimension()}')"
-
 # ── Environment variables for Render deployment ──
-# These switch from LM Studio (local dev) to in-process models (container)
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Embedding: use local sentence-transformers instead of LM Studio API
-ENV EMBEDDING_PROVIDER=local
-ENV EMBEDDING_MODEL=BAAI/bge-m3
-
-# Reranker: use local CrossEncoder instead of LM Studio API
-ENV RERANKER_PROVIDER=local
-ENV RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+# Embedding: use Gemini API (no local model needed)
+ENV EMBEDDING_PROVIDER=gemini
+ENV EMBEDDING_MODEL=gemini-embedding-001
+ENV EMBEDDING_DIMENSION=768
 
 # LLM: keep OpenRouter (or set GEMINI_API_KEY via Render dashboard)
 # Set these via Render Environment Variables dashboard:

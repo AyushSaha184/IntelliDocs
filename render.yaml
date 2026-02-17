@@ -51,12 +51,15 @@ services:
           name: rag-assistant-db
           property: password
 
-      # Local Embedding Model (downloaded during Docker build)
+      # Gemini Embedding API (lightweight, no local model needed)
       - key: EMBEDDING_PROVIDER
-        value: local
+        value: gemini
 
       - key: EMBEDDING_MODEL
-        value: BAAI/bge-m3
+        value: gemini-embedding-001
+
+      - key: EMBEDDING_DIMENSION
+        value: "768"
 
       - key: EMBEDDING_NORMALIZE
         value: "true"
@@ -78,7 +81,7 @@ services:
         sync: false  # Set this manually in Render dashboard
 
       - key: GEMINI_API_KEY
-        sync: false  # Set this manually in Render dashboard (optional)
+        sync: false  # REQUIRED — set in Render dashboard (used for embeddings)
 
       - key: OPENROUTER_SITE_URL
         value: https://rag-assistant.onrender.com

@@ -1,0 +1,58 @@
+# ============================================================
+# Render.com requirements (slim version — no local ML models)
+# ============================================================
+# This file excludes PyTorch, sentence-transformers, FlagEmbedding,
+# spacy, and transformers to stay under Render free-tier 512 MB RAM.
+# Embeddings are handled via Gemini API instead of local models.
+
+# LLM & RAG Framework
+openai
+anthropic
+google-genai
+
+# Vector Stores (FAISS is lightweight without torch)
+chromadb
+pinecone-client
+faiss-cpu
+
+# Document Parsing & Ingestion
+unstructured[pdf,docx,xlsx]
+PyMuPDF
+python-magic
+python-docx
+openpyxl
+beautifulsoup4
+lxml
+pillow
+
+# Data Processing
+pandas
+numpy
+scikit-learn
+
+# Web Framework & APIs
+FastAPI
+python-multipart
+uvicorn
+requests
+aiohttp
+
+# Database
+sqlalchemy
+psycopg2-binary
+
+# Text Processing (lightweight only)
+nltk
+
+# Configuration & Environment
+python-dotenv
+pydantic
+pydantic-settings
+
+# Logging & Monitoring
+structlog
+
+# Utilities
+tqdm
+click
+pyyaml
