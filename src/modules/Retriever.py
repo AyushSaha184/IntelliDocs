@@ -40,7 +40,7 @@ import time
 import json
 import hashlib
 import numpy as np
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections import defaultdict
@@ -434,7 +434,7 @@ class VespaStyleIndex:
     # ── Search Components ──────────────────────────────────
 
     def _dense_search(
-        self, query_dense: np.ndarray, k: int
+        self, query_dense: np.ndarray, k: int, allowed_chunk_indices: Optional[Set[int]] = None
     ) -> Dict[int, float]:
         """FAISS inner-product search (cosine on normalized vectors).
 
@@ -449,18 +449,24 @@ class VespaStyleIndex:
         if norm > 0:
             query_vec /= norm
 
-        actual_k = min(k, self.chunk_count)
-        scores, indices = self.dense_index.search(query_vec, actual_k)
+        # Expand search if filtering
+        fetch_k = min(k * 20 if allowed_chunk_indices is not None else k, self.chunk_count)
+        scores, indices = self.dense_index.search(query_vec, fetch_k)
 
         results = {}
         for score, idx in zip(scores[0], indices[0]):
             if idx >= 0:
-                results[int(idx)] = float(score)
+                idx = int(idx)
+                if allowed_chunk_indices is not None and idx not in allowed_chunk_indices:
+                    continue
+                results[idx] = float(score)
+                if len(results) >= k:
+                    break
 
         return results
 
     def _lexical_search(
-        self, query_lexical: Dict[int, float], k: int
+        self, query_lexical: Dict[int, float], k: int, allowed_chunk_indices: Optional[Set[int]] = None
     ) -> Dict[int, float]:
         """Sparse dot product via inverted index.
 
@@ -473,6 +479,8 @@ class VespaStyleIndex:
             token_id_int = int(token_id)
             if token_id_int in self.inverted_index:
                 for chunk_idx, doc_weight in self.inverted_index[token_id_int]:
+                    if allowed_chunk_indices is not None and chunk_idx not in allowed_chunk_indices:
+                        continue
                     scores[chunk_idx] += q_weight * doc_weight
 
         # Return top-k
@@ -624,6 +632,7 @@ class VespaStyleIndex:
         query_embedding: M3Embedding,
         k: int = 5,
         retrieval_k: int = 50,
+        allowed_chunk_indices: Optional[Set[int]] = None,
     ) -> List[Tuple[int, float, Dict[str, float]]]:
         """Hybrid search combining all three M3 representations.
 
@@ -636,17 +645,20 @@ class VespaStyleIndex:
             query_embedding: M3Embedding with all three representations
             k: Number of final results to return
             retrieval_k: Candidates to pull from each retriever
+            allowed_chunk_indices: Restrict search space for metadata filtering
 
         Returns:
             List of (chunk_idx, combined_score, component_scores_dict)
         """
         # Stage 1: Gather candidates
-        dense_scores = self._dense_search(query_embedding.dense, retrieval_k)
-        lexical_scores = self._lexical_search(
-            query_embedding.lexical, retrieval_k
-        )
+        dense_scores = self._dense_search(query_embedding.dense, retrieval_k, allowed_chunk_indices)
+        lexical_scores = self._lexical_search(query_embedding.lexical, retrieval_k, allowed_chunk_indices)
 
         all_candidates = set(dense_scores.keys()) | set(lexical_scores.keys())
+        
+        if allowed_chunk_indices is not None:
+            all_candidates = all_candidates & allowed_chunk_indices
+            
         if not all_candidates:
             return []
 
@@ -808,33 +820,30 @@ class VespaStyleIndex:
 
 
 # ─────────────────────────────────────────────────────────────
-# LM Studio Reranker (BGE-reranker-v2-m3)
+# NVIDIA API Reranker (nv-rerank-qa-mistral-4b:1)
 # ─────────────────────────────────────────────────────────────
 
 
-class LMStudioReranker:
-    """Reranker using BGE-reranker-v2-m3 via LM Studio's /v1/rerank endpoint.
+class NvidiaReranker:
+    """Reranker using NVIDIA's API for nv-rerank-qa-mistral-4b:1.
 
     Only activates when candidate count exceeds a threshold (default 8),
     then returns the top-k (default 5) reranked results.
-
-    This saves compute: small result sets are already well-ranked
-    by the hybrid fusion; reranking adds value only for larger sets.
+    
+    Requires NVIDIA_API_KEY environment variable.
     """
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:1234/v1",
-        model: str = "gpustack/text-embedding-bge-reranker-v2-m3",
+        model: str = "nv-rerank-qa-mistral-4b:1",
         min_chunks_to_rerank: int = 8,
         top_k_after_rerank: int = 5,
         timeout: float = 30.0,
     ):
-        """Initialize LM Studio reranker.
+        """Initialize NVIDIA reranker.
 
         Args:
-            base_url: LM Studio API base URL
-            model: Reranker model name loaded in LM Studio
+            model: Reranker model ID
             min_chunks_to_rerank: Only rerank when candidates > this
             top_k_after_rerank: Number of results after reranking
             timeout: API call timeout in seconds
@@ -842,15 +851,22 @@ class LMStudioReranker:
         if not REQUESTS_AVAILABLE:
             raise ImportError("requests not installed. Run: pip install requests")
 
-        self.base_url = base_url.rstrip("/")
+        self.api_key = os.environ.get("NVIDIA_API_KEY")
+        if not self.api_key:
+            logger.warning("NVIDIA_API_KEY environment variable not set. Reranking will fail.")
+
         self.model = model
         self.min_chunks_to_rerank = min_chunks_to_rerank
         self.top_k_after_rerank = top_k_after_rerank
         self.timeout = timeout
-        self.rerank_url = f"{self.base_url}/rerank"
+        self.rerank_url = "https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking"
+        
+        # Re-use connections for faster subsequent calls
+        import requests
+        self.session = requests.Session()
 
         logger.info(
-            f"LMStudioReranker initialized: model={model}, "
+            f"NvidiaReranker initialized: model={model}, "
             f"min_chunks={min_chunks_to_rerank}, top_k={top_k_after_rerank}"
         )
 
@@ -864,7 +880,7 @@ class LMStudioReranker:
         documents: List[str],
         top_k: Optional[int] = None,
     ) -> List[Tuple[int, float]]:
-        """Rerank documents using BGE-reranker-v2-m3.
+        """Rerank documents using NVIDIA API.
 
         Args:
             query: Query text
@@ -878,30 +894,45 @@ class LMStudioReranker:
             return []
 
         top_k = top_k or self.top_k_after_rerank
+        
+        if not self.api_key:
+            logger.error("Cannot rerank: NVIDIA_API_KEY not set")
+            return [(i, 0.0) for i in range(min(top_k, len(documents)))]
 
         try:
+            # Format according to NVIDIA API spec
             payload = {
                 "model": self.model,
-                "query": query,
-                "documents": documents,
-                "top_n": top_k,
+                "query": {
+                    "text": query
+                },
+                "passages": [
+                    {"text": doc} for doc in documents
+                ]
+            }
+            
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json",
             }
 
-            response = requests.post(
+            response = self.session.post(
                 self.rerank_url,
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 timeout=self.timeout,
             )
             response.raise_for_status()
 
             result = response.json()
 
-            # Parse LM Studio /rerank response
+            # Parse NVIDIA /reranking response
+            # Format is typically {"rankings": [{"index": 0, "logit": 2.5}, ...]}
             reranked = []
-            for item in result.get("results", []):
+            for item in result.get("rankings", []):
                 original_idx = item.get("index", 0)
-                score = item.get("relevance_score", 0.0)
+                # 'logit' is the score returned by nv-rerank-qa-mistral-4b
+                score = item.get("logit", 0.0)
                 reranked.append((original_idx, score))
 
             # Sort by score descending
@@ -910,9 +941,13 @@ class LMStudioReranker:
 
         except requests.exceptions.ConnectionError:
             logger.warning(
-                "LM Studio reranker not available — "
+                "NVIDIA reranker API not reachable — "
                 "returning results without reranking"
             )
+            return [(i, 0.0) for i in range(min(top_k, len(documents)))]
+
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"NVIDIA Reranker HTTP Error: {e.response.text if hasattr(e, 'response') else str(e)}")
             return [(i, 0.0) for i in range(min(top_k, len(documents)))]
 
         except Exception as e:
@@ -1091,9 +1126,7 @@ class HybridRetriever:
 
         # ── Reranker ──
         if use_reranker:
-            self.reranker = reranker or LMStudioReranker(
-                base_url=lm_studio_base_url,
-                model=lm_studio_reranker_model,
+            self.reranker = reranker or NvidiaReranker(
                 min_chunks_to_rerank=min_chunks_to_rerank,
                 top_k_after_rerank=top_k_after_rerank,
             )
@@ -1171,6 +1204,7 @@ class HybridRetriever:
         k: int = 5,
         retrieval_k: int = 50,
         force_rerank: Optional[bool] = None,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[HybridRetrievalResult]:
         """Full retrieval pipeline: encode → search → fuse → (rerank).
 
@@ -1179,6 +1213,7 @@ class HybridRetriever:
             k: Number of final results
             retrieval_k: Candidates per retriever stage
             force_rerank: Override automatic rerank decision
+            filters: Optional metadata filtering criteria
 
         Returns:
             List of HybridRetrievalResult objects
@@ -1188,10 +1223,31 @@ class HybridRetriever:
         # 1. Encode query with BGE-M3
         query_embedding = self.encoder.encode(query)
 
+        # 1.5 Eval filters to get subset of allowed chunk indices
+        allowed_chunk_indices = None
+        if filters:
+            allowed_chunk_indices = set()
+            for chunk_idx, chunk_id in enumerate(self.index.chunk_ids):
+                meta = self._chunk_metadata.get(chunk_id, {})
+                match = True
+                for fk, fv in filters.items():
+                    if meta.get(fk) != fv:
+                        match = False
+                        break
+                if match:
+                    allowed_chunk_indices.add(chunk_idx)
+            
+            # Fast-fail if filters are too restrictive
+            if not allowed_chunk_indices:
+                return []
+
         # 2. Hybrid search (dense + lexical + ColBERT → fusion)
         search_k = max(k * 3, retrieval_k) if self.reranker else k
         raw_results = self.index.hybrid_search(
-            query_embedding, k=search_k, retrieval_k=retrieval_k
+            query_embedding, 
+            k=search_k, 
+            retrieval_k=retrieval_k,
+            allowed_chunk_indices=allowed_chunk_indices
         )
 
         if not raw_results:
@@ -1296,7 +1352,7 @@ class RAGRetriever:
             vector_store: Vector store for dense retrieval
             embedding_service: Service for generating embeddings
             chunks: Dict mapping chunk_id to chunk data
-            reranker: Optional reranker (LMStudioReranker or HuggingFaceReranker)
+            reranker: Optional reranker (NvidiaReranker or HuggingFaceReranker)
             use_reranker: Enable reranking (requires reranker to be provided)
         """
         self.vector_store = vector_store
@@ -1309,13 +1365,14 @@ class RAGRetriever:
         else:
             logger.info("RAGRetriever initialized (legacy dense-only mode)")
 
-    def retrieve(self, query: str, k: int = 5, force_rerank: Optional[bool] = None) -> List[RetrievalResult]:
+    def retrieve(self, query: str, k: int = 5, force_rerank: Optional[bool] = None, filters: Optional[Dict[str, Any]] = None) -> List[RetrievalResult]:
         """Retrieve relevant chunks for a query.
         
         Args:
             query: Query text
             k: Number of results to return
             force_rerank: Override automatic rerank decision (None = auto)
+            filters: Optional dictionary of metadata key-value pairs to filter by
             
         Returns:
             List of RetrievalResult objects
@@ -1325,7 +1382,7 @@ class RAGRetriever:
         
         query_embedding = self.embedding_service.embed_text(query)
         search_results = self.vector_store.search(
-            query_vector=query_embedding.embedding, k=retrieval_k
+            query_vector=query_embedding.embedding, k=retrieval_k, filters=filters
         )
 
         results = []

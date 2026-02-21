@@ -1,17 +1,13 @@
 import logging
 import os
+import sys
 from datetime import datetime
 
-# Cached formatters (created once, reused many times)
-_CONSOLE_FORMATTER = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
-_FILE_FORMATTER = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+try:
+    import structlog
+    STRUCTLOG_AVAILABLE = True
+except ImportError:
+    STRUCTLOG_AVAILABLE = False
 
 # Cached default log directory
 _DEFAULT_LOG_DIR = os.path.join(
@@ -19,47 +15,89 @@ _DEFAULT_LOG_DIR = os.path.join(
     "../../logs"
 )
 
+def _setup_structlog(log_dir: str, console_level: int, file_level: int):
+    """Configure structlog processors and standard library routing."""
+    
+    # 1. Configure standard logging to handle structlog's output
+    if not logging.root.handlers:
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"app_{datetime.now().strftime('%Y%m%d')}.jsonl")
+        
+        # File handler gets raw JSON strings directly from structlog
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(file_level)
+        file_handler.setFormatter(logging.Formatter('%(message)s'))
+
+        # Console handler gets pretty colored output
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(console_level)
+        console_handler.setFormatter(logging.Formatter('%(message)s'))
+        
+        logging.root.setLevel(min(console_level, file_level))
+        logging.root.addHandler(file_handler)
+        logging.root.addHandler(console_handler)
+
+    # 2. Configure structlog
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+    
+    # Configure the formatters specifically for the handlers we just made
+    formatter_json = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.processors.JSONRenderer(),
+    )
+    formatter_console = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.dev.ConsoleRenderer(colors=True),
+    )
+    
+    # Map formatters to standard handlers
+    handlers = logging.root.handlers
+    if len(handlers) >= 2:
+        handlers[0].setFormatter(formatter_json)
+        handlers[1].setFormatter(formatter_console)
 
 def get_logger(name: str, log_dir: str = None, 
                console_level: int = logging.INFO,
-               file_level: int = logging.DEBUG) -> logging.Logger:
+               file_level: int = logging.DEBUG):
     """
-    Get a configured logger instance
-    
-    Args:
-        name: Logger name (usually __name__)
-        log_dir: Directory to save logs. Defaults to logs/
-        console_level: Logging level for console output. Defaults to INFO
-        file_level: Logging level for file output. Defaults to DEBUG
+    Get a configured structlog instance. Fallbacks to standard logging if structlog is missing.
+    """
+    if not STRUCTLOG_AVAILABLE:
+        # Fallback to standard logging for backward compatibility if structlog isn't installed
+        logger = logging.getLogger(name)
+        if hasattr(logger, "is_setup"): return logger
         
-    Returns:
-        Configured logger instance
-    """
-    logger = logging.getLogger(name)
-    
-    # Only add handlers if they don't exist (avoid duplicate logs)
-    if logger.hasHandlers():
+        logger.setLevel(logging.INFO)
+        log_dir = log_dir or _DEFAULT_LOG_DIR
+        os.makedirs(log_dir, exist_ok=True)
+        
+        fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        
+        ch = logging.StreamHandler()
+        ch.setLevel(console_level)
+        ch.setFormatter(fmt)
+        
+        log_file = os.path.join(log_dir, f"app_{datetime.now().strftime('%Y%m%d')}.log")
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(file_level)
+        fh.setFormatter(fmt)
+        
+        logger.addHandler(ch)
+        logger.addHandler(fh)
+        logger.is_setup = True
         return logger
-    
-    logger.setLevel(logging.INFO)
-    
-    # Create logs directory if it doesn't exist
+
+    # Initialize structlog
     log_dir = log_dir or _DEFAULT_LOG_DIR
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(console_level)
-    console_handler.setFormatter(_CONSOLE_FORMATTER)
-    
-    # File handler
-    log_file = os.path.join(log_dir, f"app_{datetime.now().strftime('%Y%m%d')}.log")
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(file_level)
-    file_handler.setFormatter(_FILE_FORMATTER)
-    
-    # Add handlers to logger
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-    
-    return logger
+    _setup_structlog(log_dir, console_level, file_level)
+    return structlog.get_logger(name)

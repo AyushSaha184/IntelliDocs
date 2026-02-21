@@ -22,7 +22,7 @@ export default function FileUpload({ onFilesSelected, disabled, pendingFiles = [
         // Check file extension
         const fileName = file.name.toLowerCase();
         const hasValidExtension = FILE_EXTENSIONS.some(ext => fileName.endsWith(ext));
-        
+
         if (!hasValidExtension) {
             return 'Unsupported file type. Please upload a valid document, text, or code file.';
         }
@@ -48,7 +48,7 @@ export default function FileUpload({ onFilesSelected, disabled, pendingFiles = [
         }
 
         setError('');
-        
+
         // Pass files to parent component
         if (onFilesSelected) {
             onFilesSelected(validFiles);
@@ -72,24 +72,25 @@ export default function FileUpload({ onFilesSelected, disabled, pendingFiles = [
                 disabled={disabled || uploading}
                 multiple
             />
-            
+
             <button
+                type="button"
                 onClick={handleButtonClick}
                 disabled={disabled || uploading}
                 className="p-1.5 sm:p-2 rounded-md hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed relative"
                 title={pendingFiles.length > 0 ? "Add more files" : "Upload files"}
             >
-                <svg 
-                    className="w-4 h-4 sm:w-5 sm:h-5 text-white" 
-                    fill="none" 
-                    stroke="currentColor" 
+                <svg
+                    className="w-4 h-4 sm:w-5 sm:h-5 text-white"
+                    fill="none"
+                    stroke="currentColor"
                     viewBox="0 0 24 24"
                 >
-                    <path 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth={2} 
-                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" 
+                    <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
                     />
                 </svg>
             </button>

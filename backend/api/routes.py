@@ -1,5 +1,6 @@
 """FastAPI routes for session-aware RAG backend."""
 
+import threading
 from typing import Optional, List
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, BackgroundTasks
@@ -10,9 +11,23 @@ from backend.services.session_service import get_session_manager, DATA_DIR
 from backend.services.rag_service_session import ask_rag_session, get_llm_status, clear_session_handler
 from backend.rag.IngestSession import ingest_documents_session
 from src.modules.QueryGeneration import QueryResult
+from src.utils.Logger import get_logger
 import asyncio
 
+logger = get_logger(__name__)
 router = APIRouter()
+
+# Concurrency control: max 5 sessions processing at once (backpressure)
+_processing_semaphore = threading.Semaphore(5)
+
+# Supported file extensions for upload validation
+SUPPORTED_EXTENSIONS = {
+    ".pdf", ".csv", ".tsv", ".xlsx", ".xls",
+    ".json", ".yaml", ".yml", ".md", ".html", ".htm",
+    ".py", ".js", ".java", ".cpp", ".c", ".cs", ".go",
+    ".rs", ".ts", ".jsx", ".tsx", ".txt", ".docx",
+    ".ipynb",
+}
 
 
 # Request/Response Models
@@ -55,8 +70,27 @@ class SessionStatusResponse(BaseModel):
 
 # Background task helper
 def process_document_async(session_id: str, session_manager):
-    """Background task to process uploaded document."""
+    """Background task to process uploaded document.
+    
+    Uses a semaphore for backpressure (max 5 concurrent processing sessions).
+    Retries the full ingestion up to 2 times on transient failures.
+    """
     from backend.database.models import get_session_local
+    
+    acquired = _processing_semaphore.acquire(timeout=300)  # Wait up to 5 min
+    if not acquired:
+        # Could not acquire — too many concurrent sessions
+        db = get_session_local()()
+        try:
+            session_manager.update_session_status(
+                session_id=session_id,
+                status="error",
+                db=db,
+                error_message="Server busy — too many documents being processed. Please try again later."
+            )
+        finally:
+            db.close()
+        return
     
     db = get_session_local()()
     try:
@@ -64,33 +98,58 @@ def process_document_async(session_id: str, session_manager):
         chunks_dir = session_manager.get_chunks_dir(session_id)
         vector_store_dir = session_manager.get_vector_store_dir(session_id)
         
-        # Run ingestion
-        chunks_count = ingest_documents_session(
-            session_id=session_id,
-            documents_dir=documents_dir,
-            chunks_dir=chunks_dir,
-            vector_store_dir=vector_store_dir
-        )
+        # Retry ingestion up to 2 times on transient errors
+        max_attempts = 2
+        last_error = None
         
-        # Update status to ready
+        for attempt in range(max_attempts):
+            try:
+                chunks_count = ingest_documents_session(
+                    session_id=session_id,
+                    documents_dir=documents_dir,
+                    chunks_dir=chunks_dir,
+                    vector_store_dir=vector_store_dir
+                )
+                
+                # Success — update status
+                session_manager.update_session_status(
+                    session_id=session_id,
+                    status="ready",
+                    db=db,
+                    chunks_count=chunks_count
+                )
+                logger.info(f"[{session_id[:8]}] Processing complete: {chunks_count} chunks")
+                return
+                
+            except Exception as e:
+                last_error = e
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        f"[{session_id[:8]}] Ingestion attempt {attempt + 1} failed, retrying: {e}"
+                    )
+                    import time
+                    time.sleep(2)  # Brief pause before retry
+        
+        # All attempts failed
+        logger.error(f"[{session_id[:8]}] Processing failed after {max_attempts} attempts: {last_error}")
         session_manager.update_session_status(
             session_id=session_id,
-            status="ready",
+            status="error",
             db=db,
-            chunks_count=chunks_count
+            error_message=str(last_error)
         )
         
     except Exception as e:
-        # Update status to error
+        logger.error(f"[{session_id[:8]}] Unexpected error: {e}")
         session_manager.update_session_status(
             session_id=session_id,
             status="error",
             db=db,
             error_message=str(e)
         )
-        raise
     finally:
         db.close()
+        _processing_semaphore.release()
 
 
 # API Routes
@@ -119,6 +178,15 @@ async def upload(
             raise HTTPException(
                 status_code=507, 
                 detail=f"Insufficient storage space. Only {available_gb:.2f}GB available. Cannot accept upload."
+            )
+        
+        # Validate file extension before reading
+        file_ext = Path(file.filename).suffix.lower() if file.filename else ""
+        if file_ext not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '{file_ext}'. "
+                       f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
             )
         
         # Read file
@@ -282,9 +350,36 @@ def ask(query: Query, db: DBSession = Depends(get_db)):
 
 
 @router.get("/health")
-def health():
-    """Health check endpoint."""
-    return {
+def health(db: DBSession = Depends(get_db)):
+    """Deep health check endpoint validating system components."""
+    status_report = {
         "status": "ok",
-        "llm_loaded": get_llm_status()
+        "llm_loaded": get_llm_status(),
+        "database": "unknown",
+        "system_stats": {}
     }
+
+    # 1. Database Check
+    try:
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
+        status_report["database"] = "connected"
+    except Exception as e:
+        logger.error(f"Healthcheck failed Database verification: {e}")
+        status_report["database"] = "disconnected"
+        status_report["status"] = "degraded"
+
+    # 2. Vector Store File Check
+    try:
+        from config.config import DATA_DIR
+        vstore_dir = Path(DATA_DIR) / "vector_store"
+        if vstore_dir.exists():
+            faiss_files = list(vstore_dir.glob("**/index.faiss"))
+            status_report["system_stats"]["total_faiss_indexes"] = len(faiss_files)
+        else:
+            status_report["system_stats"]["total_faiss_indexes"] = 0
+    except Exception as e:
+        logger.error(f"Healthcheck failed FAISS verification: {e}")
+        status_report["status"] = "degraded"
+
+    return status_report

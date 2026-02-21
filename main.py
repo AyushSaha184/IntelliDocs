@@ -38,7 +38,7 @@ from src.modules.Loader import DocumentLoader, DocumentMetadata, load_documents
 from src.modules.Chunking import TextChunker, TextChunk, ChunkingStrategy, create_chunker
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.Retriever import RAGRetriever, LMStudioReranker
+from src.modules.Retriever import RAGRetriever, NvidiaReranker
 from src.modules.QueryGeneration import QueryHandler
 from src.modules.LLM import create_llm, BaseLLM
 from src.modules.ParallelPipeline import ParallelRAGPipeline, GPUConfig
@@ -51,6 +51,7 @@ from config.config import (
     HF_TOKEN,
     HF_INFERENCE_PROVIDER,
     GEMINI_API_KEY,
+    NVIDIA_API_KEY,
     OPENROUTER_API_KEY,
     OPENROUTER_SITE_URL,
     OPENROUTER_SITE_NAME,
@@ -159,6 +160,12 @@ def _build_embedding_kwargs(device: str, model_name: Optional[str] = None) -> Di
             "timeout": EMBEDDING_TIMEOUT,
             "max_retries": EMBEDDING_MAX_RETRIES
         })
+    elif EMBEDDING_PROVIDER.lower() in ["nvidia", "nvidia-build", "nvidia-api"]:
+        kwargs.update({
+            "api_key": NVIDIA_API_KEY,
+            "timeout": EMBEDDING_TIMEOUT,
+            "max_retries": EMBEDDING_MAX_RETRIES
+        })
     elif EMBEDDING_PROVIDER.lower() in ["lm-studio", "lmstudio", "openai-compatible"]:
         kwargs.update({
             "base_url": LM_STUDIO_BASE_URL,
@@ -173,12 +180,12 @@ def _build_embedding_kwargs(device: str, model_name: Optional[str] = None) -> Di
 
 
 def _create_reranker():
-    """Create LM Studio reranker for local inference."""
+    """Create NVIDIA API reranker."""
     if not USE_RERANKER:
         return None
+    logger.info(f"NvidiaReranker initialized: model={RERANKER_MODEL}, min_chunks_to_rerank={MIN_CHUNKS_TO_RERANK}, top_k_after_rerank={TOP_K_AFTER_RERANK}")
     
-    return LMStudioReranker(
-        base_url=LM_STUDIO_BASE_URL,
+    return NvidiaReranker(
         model=RERANKER_MODEL,
         min_chunks_to_rerank=MIN_CHUNKS_TO_RERANK,
         top_k_after_rerank=TOP_K_AFTER_RERANK
@@ -1347,20 +1354,22 @@ Note: By default, --build clears existing databases for a fresh rebuild.
             )
             success = pipeline.build()
         else:
-            # Use traditional sequential pipeline
-            logger.info("Using SEQUENTIAL PIPELINE mode")
-            pipeline = RAGPipeline(
-                documents_dir=args.documents_dir,
-                chunks_dir=args.chunks_dir,
-                vector_store_dir=args.vector_store_dir,
-                chunk_size=args.chunk_size,
-                chunk_overlap=args.chunk_overlap,
-                strategy=args.strategy,
-                encoding_name=args.encoding,
-                vector_store_type=args.vector_store_type,
-                device=args.device
+            # Use improved sequential pipeline with robust PDF/CSV and retry
+            logger.info("Using IMPROVED SEQUENTIAL PIPELINE mode")
+            logger.info("Features: parallel file loading, OCR detection, streaming CSV, embedding retry")
+            from backend.rag.IngestSession import ingest_documents_session
+            
+            # Generate a build session ID for logging
+            build_session_id = f"build_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            chunks_count = ingest_documents_session(
+                session_id=build_session_id,
+                documents_dir=Path(args.documents_dir),
+                chunks_dir=Path(args.chunks_dir),
+                vector_store_dir=Path(args.vector_store_dir),
             )
-            success = pipeline.run_complete_pipeline()
+            success = chunks_count > 0
+            logger.info(f"Build complete: {chunks_count} chunks created")
         
         sys.exit(0 if success else 1)
         
@@ -1419,18 +1428,20 @@ Note: By default, --build clears existing databases for a fresh rebuild.
             except Exception as e:
                 logger.error(f"Error clearing databases: {e}")
         
-        pipeline = RAGPipeline(
-            documents_dir=args.documents_dir,
-            chunks_dir=args.chunks_dir,
-            vector_store_dir=args.vector_store_dir,
-            chunk_size=args.chunk_size,
-            chunk_overlap=args.chunk_overlap,
-            strategy=args.strategy,
-            encoding_name=args.encoding,
-            vector_store_type=args.vector_store_type,
-            device=args.device
+        # Use improved pipeline for default build
+        logger.info("Using IMPROVED PIPELINE with robust PDF/CSV and retry")
+        from backend.rag.IngestSession import ingest_documents_session
+        
+        build_session_id = f"build_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        chunks_count = ingest_documents_session(
+            session_id=build_session_id,
+            documents_dir=Path(args.documents_dir),
+            chunks_dir=Path(args.chunks_dir),
+            vector_store_dir=Path(args.vector_store_dir),
         )
-        success = pipeline.run_complete_pipeline()
+        success = chunks_count > 0
+        logger.info(f"Build complete: {chunks_count} chunks created")
         sys.exit(0 if success else 1)
 
 

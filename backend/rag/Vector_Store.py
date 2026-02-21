@@ -9,6 +9,7 @@ from config.config import (
     HF_TOKEN,
     HF_INFERENCE_PROVIDER,
     GEMINI_API_KEY,
+    NVIDIA_API_KEY,
     EMBEDDING_TASK_TYPE,
     EMBEDDING_DIMENSION,
     LM_STUDIO_BASE_URL,
@@ -34,6 +35,10 @@ def _build_embedding_kwargs() -> dict:
             "api_key": GEMINI_API_KEY,
             "task_type": EMBEDDING_TASK_TYPE,
             "output_dimensionality": EMBEDDING_DIMENSION
+        })
+    elif EMBEDDING_PROVIDER.lower() in ["nvidia", "nvidia-build", "nvidia-api"]:
+        kwargs.update({
+            "api_key": NVIDIA_API_KEY,
         })
     elif EMBEDDING_PROVIDER.lower() in ["lm-studio", "lmstudio", "openai-compatible"]:
         kwargs.update({

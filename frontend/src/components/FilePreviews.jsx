@@ -3,20 +3,20 @@ export default function FilePreviews({ files, onRemove, onUploadAll, uploading }
 
     const getFileIcon = (fileName) => {
         const ext = fileName.toLowerCase().split('.').pop();
-        
+
         // Document icons
         if (['pdf'].includes(ext)) return '📄';
         if (['docx', 'doc'].includes(ext)) return '📝';
         if (['pptx', 'ppt'].includes(ext)) return '📊';
         if (['xlsx', 'xls', 'csv'].includes(ext)) return '📈';
-        
+
         // Text/Markup icons
         if (['txt', 'md', 'rst'].includes(ext)) return '📃';
         if (['json', 'xml', 'html', 'htm'].includes(ext)) return '🌐';
-        
+
         // Code icons
         if (['py', 'js', 'java', 'cpp', 'c', 'h', 'sh', 'yml', 'yaml'].includes(ext)) return '💻';
-        
+
         return '📎';
     };
 
@@ -33,6 +33,7 @@ export default function FilePreviews({ files, onRemove, onUploadAll, uploading }
                     {files.length} file{files.length !== 1 ? 's' : ''} selected
                 </span>
                 <button
+                    type="button"
                     onClick={onUploadAll}
                     disabled={uploading}
                     className="px-3 sm:px-4 py-1 sm:py-1.5 bg-[#10a37f] text-white text-xs sm:text-sm rounded-md hover:bg-[#0d8c6f] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
@@ -40,7 +41,7 @@ export default function FilePreviews({ files, onRemove, onUploadAll, uploading }
                     {uploading ? 'Uploading...' : 'Upload All'}
                 </button>
             </div>
-            
+
             {/* File list with max 2 visible, scroll for more */}
             <div className="space-y-1.5 sm:space-y-2 max-h-[100px] sm:max-h-[120px] overflow-y-auto pr-1 sm:pr-2 custom-scrollbar">
                 {files.map((file, index) => (
@@ -54,6 +55,7 @@ export default function FilePreviews({ files, onRemove, onUploadAll, uploading }
                             <p className="text-[10px] sm:text-xs text-gray-400">{formatFileSize(file.size)}</p>
                         </div>
                         <button
+                            type="button"
                             onClick={() => onRemove(index)}
                             disabled={uploading}
                             className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded transition-all disabled:cursor-not-allowed flex-shrink-0"

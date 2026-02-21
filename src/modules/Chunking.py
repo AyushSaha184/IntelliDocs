@@ -935,83 +935,128 @@ class TextChunker:
                     raise
             
             if df is not None and not df.empty:
-                # AUTO-DETECT Q&A structure (query, question, answer, context columns)
+                # AUTO-DETECT CSV STRUCTURE
                 columns_lower = [col.lower() for col in df.columns]
-                has_qa_structure = (
-                    any(col in columns_lower for col in ['query', 'question', 'q']) and
-                    any(col in columns_lower for col in ['answer', 'response', 'a']) and
-                    any(col in columns_lower for col in ['context', 'passage', 'text', 'content'])
-                )
                 
-                if has_qa_structure:
-                    # MODE 1: Q&A Mode - One row per chunk for semantic retrieval
-                    logger.info(f"Q&A CSV detected - using per-row chunking for semantic retrieval")
+                # Detect Document columns
+                has_document = any(col in columns_lower for col in ['text', 'content', 'document'])
+                
+                # Detect Q&A columns
+                has_question = any(col in columns_lower for col in ['query', 'question', 'q'])
+                has_answer = any(col in columns_lower for col in ['answer', 'response', 'a'])
+                has_qa_structure = has_question and has_answer
+                
+                if has_document:
+                    # MODE 1: Document Mode - Chunk the specific text column(s) normally
+                    logger.info(f"Document CSV detected - extracting and chunking text column")
                     
-                    # Find relevant columns
-                    query_col = None
-                    answer_col = None
-                    context_col = None
-                    
+                    # Find the primary text column
+                    text_col = None
                     for col in df.columns:
                         col_lower = col.lower()
-                        if not query_col and col_lower in ['query', 'question', 'q']:
-                            query_col = col
-                        if not answer_col and col_lower in ['answer', 'response', 'a']:
-                            answer_col = col
-                        if not context_col and col_lower in ['context', 'passage', 'text', 'content']:
-                            context_col = col
+                        if col_lower in ['text', 'content', 'document']:
+                            text_col = col
+                            break
                     
-                    # Create one chunk per row with structured format
+                    # Identify other columns to treat as metadata (e.g., source_url, index)
+                    metadata_cols = [col for col in df.columns if col != text_col]
+                    
                     for idx, row in df.iterrows():
-                        # Build semantic chunk with labeled fields
+                        if pd.notna(row[text_col]) and str(row[text_col]).strip():
+                            row_text = str(row[text_col])
+                            
+                            # Build metadata for this row
+                            row_metadata = {'row_index': int(idx), 'csv_mode': 'document'}
+                            for m_col in metadata_cols:
+                                if pd.notna(row[m_col]):
+                                    val = str(row[m_col])
+                                    # Truncate massive metadata
+                                    row_metadata[m_col] = val if len(val) < 200 else val[:197] + "..."
+                            
+                            # Use the standard character-size chunker on the cell's text
+                            row_chunks = self._chunk_fixed_size(row_text, doc_id)
+                            
+                            for text_chunk, start_char, end_char in row_chunks:
+                                # Attach the row metadata to every sub-chunk
+                                chunk_meta = row_metadata.copy()
+                                chunks.append({
+                                    'text': text_chunk,
+                                    'start_char': start_char,
+                                    'end_char': end_char,
+                                    'metadata': chunk_meta
+                                })
+                                
+                    logger.debug(f"Document CSV created {len(chunks)} chunks from {len(df)} rows")
+                
+                elif has_qa_structure:
+                    # MODE 2: Q&A Mode - One chunk per row for semantic retrieval
+                    logger.info(f"Q&A CSV detected - using per-row chunking")
+                    
+                    # Find relevant columns
+                    query_col = next((col for col in df.columns if col.lower() in ['query', 'question', 'q']), None)
+                    answer_col = next((col for col in df.columns if col.lower() in ['answer', 'response', 'a']), None)
+                    context_col = next((col for col in df.columns if col.lower() in ['context', 'passage', 'text', 'content']), None)
+                    index_col = next((col for col in df.columns if col.lower() in ['document_index', 'doc_index', 'doc_id', 'document_id', 'id', 'index', 'idx', 'group', 'topic']), None)
+                    
+                    # Other metadata columns
+                    known_cols = {query_col, answer_col, context_col, index_col}
+                    other_cols = [col for col in df.columns if col not in known_cols]
+                    
+                    for idx, row in df.iterrows():
                         chunk_parts = []
                         
-                        if query_col:
+                        if query_col and pd.notna(row[query_col]):
                             chunk_parts.append(f"Question: {row[query_col]}")
-                        
-                        if answer_col:
+                        if answer_col and pd.notna(row[answer_col]):
                             chunk_parts.append(f"Answer: {row[answer_col]}")
-                        
-                        if context_col:
+                        if context_col and pd.notna(row[context_col]):
                             context_value = str(row[context_col])
-                            # Truncate very long contexts
-                            if len(context_value) > 1000:
-                                context_value = context_value[:1000] + "..."
+                            if len(context_value) > 2000:  # Truncate very long contexts
+                                context_value = context_value[:2000] + "..."
                             chunk_parts.append(f"Context: {context_value}")
                         
-                        # Add other columns as metadata
-                        other_cols = [col for col in df.columns if col not in [query_col, answer_col, context_col]]
+                        # Add other columns as metadata line
                         if other_cols:
-                            metadata_parts = [f"{col}: {row[col]}" for col in other_cols]
-                            chunk_parts.append("Metadata: " + " | ".join(metadata_parts))
+                            meta_parts = [f"{col}: {row[col]}" for col in other_cols if pd.notna(row[col])]
+                            if meta_parts:
+                                chunk_parts.append("Metadata: " + " | ".join(meta_parts))
                         
                         chunk_text = "\n".join(chunk_parts)
                         
                         if len(chunk_text.strip()) > 20:
+                            chunk_metadata = {'row_index': int(idx), 'csv_mode': 'qa'}
+                            if index_col and pd.notna(row[index_col]):
+                                chunk_metadata['document_index'] = str(row[index_col])
+                            
                             chunks.append({
                                 'text': chunk_text,
                                 'start_char': None,
                                 'end_char': None,
-                                'metadata': {
-                                    'row_index': int(idx),
-                                    'csv_mode': 'qa',
-                                    'char_offsets_approximate': True
-                                }
+                                'metadata': chunk_metadata
                             })
                     
-                    logger.debug(f"Q&A CSV chunking created {len(chunks)} chunks (one per row)")
+                    logger.debug(f"Q&A CSV created {len(chunks)} chunks")
                     
                 else:
-                    # MODE 2: Bulk Mode - Large row groups for efficiency
+                    # MODE 3: Bulk Mode - Large row groups for generic data
                     logger.info(f"Bulk CSV detected - using compressed chunking")
-                    rows_per_chunk = 250
+                    rows_per_chunk = 50  # Reduced from 250 to avoid exceeding embedding token limits
+                    MAX_CHUNK_CHARS = 25000  # ~6000 tokens, well within API limits
                     
-                    # Process in larger chunks (200-300 rows)
+                    # Process in chunks
                     for i in range(0, len(df), rows_per_chunk):
                         chunk_df = df.iloc[i:i+rows_per_chunk]
                         
                         # VECTORIZED OPERATION: Convert all rows to strings at once
                         chunk_text = chunk_df.astype(str).agg(' | '.join, axis=1).str.cat(sep='\n')
+                        
+                        # Cap chunk size to prevent exceeding embedding API token limits
+                        if len(chunk_text) > MAX_CHUNK_CHARS:
+                            logger.warning(
+                                f"Bulk CSV chunk too large ({len(chunk_text)} chars), "
+                                f"truncating to {MAX_CHUNK_CHARS} chars"
+                            )
+                            chunk_text = chunk_text[:MAX_CHUNK_CHARS]
                         
                         # OPTIMIZATION: Skip numeric-only chunks (fast check)
                         sample = chunk_text[:100].replace('|', '').replace(',', '').replace('\n', '').replace(' ', '').replace('.', '').replace('-', '')

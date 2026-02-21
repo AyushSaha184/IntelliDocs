@@ -905,3 +905,479 @@ def load_documents(documents_dir: str = None, use_db: bool = True, batch_size: i
         return loader.load_all_documents()
     finally:
         loader.close()
+
+
+# ============================================================================
+# ROBUST STREAMING UTILITIES (Migrated from backend/rag/ pdf_utils & csv_utils)
+# ============================================================================
+
+"""Robust PDF parsing utilities for the backend ingestion path.
+
+Features:
+- Scanned PDF detection (text vs image)
+- OCR fallback via Tesseract (optional dependency)
+- Page-level streaming for large PDFs (memory-efficient)
+- Malformed PDF recovery
+
+This module is ONLY used by the backend session ingestion (IngestSession.py).
+It does NOT affect the CLI --build pipeline.
+"""
+
+from pathlib import Path
+from typing import Generator, Tuple, Optional
+
+
+# Check for PyMuPDF
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    logger.warning("PyMuPDF not available — PDF parsing will be limited")
+
+# Check for OCR dependencies (optional)
+try:
+    import pytesseract
+    from PIL import Image
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
+# Thresholds
+MIN_CHARS_PER_PAGE = 50  # Below this = likely scanned/image PDF
+LARGE_PDF_PAGE_THRESHOLD = 50  # Stream page-by-page above this
+
+
+def detect_scanned_pdf(file_path: str) -> bool:
+    """Detect if a PDF is scanned (image-based) vs text-based.
+    
+    Opens the PDF with PyMuPDF, extracts text from first few pages,
+    and checks if the text/page ratio is suspiciously low.
+    
+    Args:
+        file_path: Path to the PDF file
+        
+    Returns:
+        True if the PDF appears to be scanned/image-based
+    """
+    if not PYMUPDF_AVAILABLE:
+        return False
+    
+    try:
+        doc = fitz.open(file_path)
+        page_count = len(doc)
+        
+        if page_count == 0:
+            doc.close()
+            return False
+        
+        # Sample first 5 pages (or all if fewer)
+        sample_pages = min(5, page_count)
+        total_chars = 0
+        
+        for i in range(sample_pages):
+            page = doc.load_page(i)
+            text = page.get_text("text")
+            total_chars += len(text.strip())
+        
+        doc.close()
+        
+        avg_chars_per_page = total_chars / sample_pages
+        is_scanned = avg_chars_per_page < MIN_CHARS_PER_PAGE
+        
+        if is_scanned:
+            logger.warning(
+                f"PDF appears to be scanned: {Path(file_path).name} "
+                f"(avg {avg_chars_per_page:.0f} chars/page across {sample_pages} sampled pages)"
+            )
+        
+        return is_scanned
+        
+    except Exception as e:
+        logger.error(f"Error detecting scanned PDF {file_path}: {e}")
+        return False
+
+
+def _ocr_page(page) -> str:
+    """Extract text from a PDF page using OCR (Tesseract).
+    
+    Converts the page to a high-DPI image and runs Tesseract OCR.
+    
+    Args:
+        page: PyMuPDF page object
+        
+    Returns:
+        Extracted text string
+    """
+    if not OCR_AVAILABLE:
+        return ""
+    
+    try:
+        # Render page at 300 DPI for good OCR quality
+        mat = fitz.Matrix(300 / 72, 300 / 72)  # 300 DPI
+        pix = page.get_pixmap(matrix=mat)
+        
+        # Convert to PIL Image
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        
+        # Run Tesseract OCR
+        text = pytesseract.image_to_string(img, lang='eng')
+        
+        return text.strip()
+        
+    except Exception as e:
+        logger.error(f"OCR failed for page: {e}")
+        return ""
+
+
+def stream_pdf_pages(file_path: str) -> Generator[Tuple[int, str], None, None]:
+    """Stream text from a PDF page by page (memory-efficient for large PDFs).
+    
+    For each page, tries text extraction first. If the page appears to be
+    scanned (< MIN_CHARS_PER_PAGE chars), falls back to OCR if available.
+    
+    Args:
+        file_path: Path to the PDF file
+        
+    Yields:
+        (page_number, text) tuples (0-indexed page numbers)
+    """
+    if not PYMUPDF_AVAILABLE:
+        logger.error("PyMuPDF not available — cannot parse PDF")
+        return
+    
+    try:
+        doc = fitz.open(file_path)
+        page_count = len(doc)
+        
+        logger.info(f"Streaming PDF: {Path(file_path).name} ({page_count} pages)")
+        
+        for page_idx in range(page_count):
+            page = doc.load_page(page_idx)
+            text = page.get_text("text").strip()
+            
+            # If page has very little text, try OCR
+            if len(text) < MIN_CHARS_PER_PAGE and OCR_AVAILABLE:
+                logger.debug(f"Page {page_idx + 1}: low text ({len(text)} chars), trying OCR")
+                ocr_text = _ocr_page(page)
+                if len(ocr_text) > len(text):
+                    text = ocr_text
+            
+            if text:
+                yield (page_idx, text)
+        
+        doc.close()
+        
+    except Exception as e:
+        logger.error(f"Error streaming PDF {file_path}: {e}")
+        raise
+
+
+def load_pdf_robust(file_path: str) -> str:
+    """Load a PDF with robust handling for both text and scanned PDFs.
+    
+    Strategy:
+    1. Try PyMuPDF text extraction
+    2. If scanned detected, fall back to OCR (if available)
+    3. If still empty, log warning and return whatever we got
+    
+    For PDFs > LARGE_PDF_PAGE_THRESHOLD pages, uses page-level streaming
+    to avoid loading the entire content into RAM at once.
+    
+    Args:
+        file_path: Path to the PDF file
+        
+    Returns:
+        Extracted text content
+    """
+    if not PYMUPDF_AVAILABLE:
+        logger.error("PyMuPDF not available — cannot parse PDF")
+        return ""
+    
+    try:
+        file_name = Path(file_path).name
+        doc = fitz.open(file_path)
+        page_count = len(doc)
+        doc.close()  # Close immediately, we'll re-open via streaming
+        
+        if page_count == 0:
+            logger.warning(f"PDF has 0 pages: {file_name}")
+            return ""
+        
+        # Use streaming for large PDFs
+        if page_count > LARGE_PDF_PAGE_THRESHOLD:
+            logger.info(f"Large PDF detected ({page_count} pages), using page streaming: {file_name}")
+        
+        # Collect text from all pages
+        pages_text = []
+        is_scanned = detect_scanned_pdf(file_path)
+        
+        for page_idx, text in stream_pdf_pages(file_path):
+            pages_text.append(text)
+        
+        full_text = "\n\n".join(pages_text)
+        
+        if not full_text.strip():
+            if is_scanned and not OCR_AVAILABLE:
+                logger.warning(
+                    f"Scanned PDF '{file_name}' produced no text. "
+                    f"Install pytesseract and Tesseract for OCR support: "
+                    f"pip install pytesseract Pillow"
+                )
+            else:
+                logger.warning(f"PDF '{file_name}' produced no extractable text")
+        else:
+            logger.info(
+                f"PDF loaded: {file_name} — {page_count} pages, "
+                f"{len(full_text)} chars extracted"
+                f"{' (with OCR)' if is_scanned and OCR_AVAILABLE else ''}"
+            )
+        
+        return full_text
+        
+    except Exception as e:
+        logger.error(f"Error loading PDF {file_path}: {e}")
+        raise
+
+
+"""Streaming CSV loading utilities for the backend ingestion path.
+
+Features:
+- Streaming row-based loading for large CSVs (via pandas chunksize)
+- Auto-detection of delimiter and structure
+- Q&A column detection for optimized chunking
+- Memory-efficient: never loads entire CSV into RAM
+
+This module is ONLY used by the backend session ingestion (IngestSession.py).
+It does NOT affect the CLI --build pipeline.
+"""
+
+from pathlib import Path
+from typing import Generator, List, Dict, Optional, Tuple
+
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    logger.warning("pandas not available — CSV streaming will be limited")
+
+# Q&A column name patterns (for auto-detection)
+QA_QUERY_PATTERNS = {"query", "question", "q", "input", "prompt", "ask"}
+QA_ANSWER_PATTERNS = {"answer", "response", "a", "output", "reply", "context", "ground_truth"}
+
+# Default chunk size for streaming
+DEFAULT_CHUNK_ROWS = 500
+
+
+def detect_csv_structure(file_path: str) -> Dict:
+    """Detect CSV structure by sampling the first few rows.
+    
+    Returns delimiter, column names, row count estimate, and
+    whether the CSV appears to be a Q&A dataset.
+    
+    Args:
+        file_path: Path to the CSV file
+        
+    Returns:
+        Dict with keys: delimiter, columns, estimated_rows, is_qa, 
+        qa_query_col, qa_answer_col
+    """
+    if not PANDAS_AVAILABLE:
+        return {"delimiter": ",", "columns": [], "estimated_rows": 0, "is_qa": False}
+    
+    result = {
+        "delimiter": ",",
+        "columns": [],
+        "estimated_rows": 0,
+        "is_qa": False,
+        "qa_query_col": None,
+        "qa_answer_col": None,
+    }
+    
+    try:
+        # Try to detect delimiter from first line
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            first_line = f.readline()
+        
+        # Count delimiters in first line to detect separator
+        for delim in ["\t", "|", ";", ","]:
+            if first_line.count(delim) >= 2:
+                result["delimiter"] = delim
+                break
+        
+        # Read first 5 rows to detect structure
+        sample = pd.read_csv(
+            file_path, 
+            sep=result["delimiter"], 
+            nrows=5, 
+            encoding="utf-8",
+            on_bad_lines="skip"
+        )
+        
+        result["columns"] = list(sample.columns)
+        
+        # Estimate total rows (fast: count newlines)
+        file_size = os.path.getsize(file_path)
+        if len(sample) > 0:
+            avg_row_bytes = file_size / max(len(sample), 1)
+            result["estimated_rows"] = int(file_size / max(avg_row_bytes, 1))
+        
+        # Detect Q&A columns
+        col_lower = {c: c.lower().strip() for c in sample.columns}
+        for col, col_low in col_lower.items():
+            if col_low in QA_QUERY_PATTERNS:
+                result["qa_query_col"] = col
+            if col_low in QA_ANSWER_PATTERNS:
+                result["qa_answer_col"] = col
+        
+        result["is_qa"] = bool(result["qa_query_col"] and result["qa_answer_col"])
+        
+        if result["is_qa"]:
+            logger.info(
+                f"CSV Q&A detected: query='{result['qa_query_col']}', "
+                f"answer='{result['qa_answer_col']}'"
+            )
+        
+        logger.info(
+            f"CSV structure: {len(result['columns'])} columns, "
+            f"~{result['estimated_rows']} rows, "
+            f"delimiter='{result['delimiter']}'"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error detecting CSV structure: {e}")
+    
+    return result
+
+
+def load_csv_streaming(
+    file_path: str,
+    chunk_rows: int = DEFAULT_CHUNK_ROWS,
+    delimiter: Optional[str] = None
+) -> Generator[Tuple[int, str], None, None]:
+    """Stream CSV file in chunks, yielding formatted text for each chunk.
+    
+    Uses pandas read_csv with chunksize for memory-efficient loading of 
+    large CSVs. Each yielded chunk is a formatted text representation of
+    `chunk_rows` rows.
+    
+    Args:
+        file_path: Path to the CSV file
+        chunk_rows: Number of rows per chunk (default 500)
+        delimiter: CSV delimiter (auto-detected if None)
+        
+    Yields:
+        (chunk_index, text) tuples where text is the formatted rows
+    """
+    if not PANDAS_AVAILABLE:
+        logger.error("pandas not available — cannot stream CSV")
+        return
+    
+    # Auto-detect delimiter if not provided
+    if delimiter is None:
+        structure = detect_csv_structure(file_path)
+        delimiter = structure["delimiter"]
+    
+    file_name = Path(file_path).name
+    
+    try:
+        chunk_idx = 0
+        total_rows = 0
+        
+        reader = pd.read_csv(
+            file_path,
+            sep=delimiter,
+            chunksize=chunk_rows,
+            encoding="utf-8",
+            on_bad_lines="skip",
+            low_memory=True,
+        )
+        
+        for df_chunk in reader:
+            if df_chunk.empty:
+                continue
+            
+            # Convert chunk to readable text format
+            # Include headers in first chunk, then just data
+            header = " | ".join(str(c) for c in df_chunk.columns)
+            
+            rows_text = []
+            if chunk_idx == 0:
+                rows_text.append(f"Columns: {header}")
+                rows_text.append("-" * min(len(header), 80))
+            
+            for _, row in df_chunk.iterrows():
+                # Format each row as "col: value" pairs, skip NaN
+                row_parts = []
+                for col in df_chunk.columns:
+                    val = row[col]
+                    if pd.notna(val):
+                        val_str = str(val).strip()
+                        if val_str:
+                            row_parts.append(f"{col}: {val_str}")
+                
+                if row_parts:
+                    rows_text.append(" | ".join(row_parts))
+            
+            text = "\n".join(rows_text)
+            total_rows += len(df_chunk)
+            
+            if text.strip():
+                yield (chunk_idx, text)
+                chunk_idx += 1
+        
+        logger.info(f"CSV streamed: {file_name} — {total_rows} rows in {chunk_idx} chunks")
+        
+    except Exception as e:
+        logger.error(f"Error streaming CSV {file_path}: {e}")
+        raise
+
+
+def load_csv_full(file_path: str) -> str:
+    """Load entire CSV as formatted text (for small files < 5MB).
+    
+    Falls back to this for small CSVs where streaming overhead isn't worth it.
+    
+    Args:
+        file_path: Path to the CSV file
+        
+    Returns:
+        Full text content of the CSV
+    """
+    if not PANDAS_AVAILABLE:
+        # Fallback: read as plain text
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    
+    try:
+        structure = detect_csv_structure(file_path)
+        df = pd.read_csv(
+            file_path,
+            sep=structure["delimiter"],
+            encoding="utf-8",
+            on_bad_lines="skip",
+        )
+        
+        # Format as readable text
+        header = " | ".join(str(c) for c in df.columns)
+        lines = [f"Columns: {header}", "-" * min(len(header), 80)]
+        
+        for _, row in df.iterrows():
+            row_parts = []
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    val_str = str(val).strip()
+                    if val_str:
+                        row_parts.append(f"{col}: {val_str}")
+            if row_parts:
+                lines.append(" | ".join(row_parts))
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.error(f"Error loading CSV {file_path}: {e}")
+        raise
+

@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from backend.database.models import get_session_local
 from backend.services.session_service import get_session_manager, DATA_DIR
+from src.modules.QueryCache import get_retrieval_cache, get_llm_cache
 from src.utils.Logger import get_logger
 
 logger = get_logger(__name__)
@@ -77,11 +78,15 @@ class CleanupScheduler:
             logger.error(f"Error checking disk space: {e}")
     
     def _cleanup(self):
-        """Perform cleanup of inactive sessions."""
+        """Perform cleanup of inactive sessions and expired cache entries."""
         db = get_session_local()()
         try:
             session_manager = get_session_manager()
             session_manager.cleanup_inactive_sessions(db)
+            
+            # Delete cache entries older than 30 minutes
+            get_retrieval_cache().delete_older_than(30)
+            get_llm_cache().delete_older_than(30)
         finally:
             db.close()
 

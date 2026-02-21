@@ -21,6 +21,9 @@ HF_INFERENCE_PROVIDER = _env("HF_INFERENCE_PROVIDER", "hf-inference")
 # Google AI Studio configuration
 GEMINI_API_KEY = _env("GEMINI_API_KEY", "")
 
+# NVIDIA API configuration
+NVIDIA_API_KEY = _env("NVIDIA_API_KEY", "")
+
 # OpenRouter configuration
 OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY", "")
 OPENROUTER_SITE_URL = _env("OPENROUTER_SITE_URL", "")
@@ -31,8 +34,8 @@ OPENROUTER_SITE_NAME = _env("OPENROUTER_SITE_NAME", "")
 # For HuggingFace Inference, use: EMBEDDING_PROVIDER=hf-inference
 # For Gemini embeddings, use: EMBEDDING_PROVIDER=gemini
 # For local transformers, use: EMBEDDING_PROVIDER=local
-EMBEDDING_PROVIDER = _env("EMBEDDING_PROVIDER", "lm-studio")
-EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "text-embedding-bge-m3")
+EMBEDDING_PROVIDER = _env("EMBEDDING_PROVIDER", "nvidia")
+EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "baai/bge-m3")
 EMBEDDING_NORMALIZE = _env("EMBEDDING_NORMALIZE", "true").lower() == "true"
 EMBEDDING_TIMEOUT = float(_env("EMBEDDING_TIMEOUT", "120.0"))
 EMBEDDING_MAX_RETRIES = int(_env("EMBEDDING_MAX_RETRIES", "3"))
@@ -59,7 +62,7 @@ TOP_K_AFTER_RERANK = int(_env("TOP_K_AFTER_RERANK", "5"))
 
 # Gemini-specific embedding configuration
 EMBEDDING_TASK_TYPE = _env("EMBEDDING_TASK_TYPE", "RETRIEVAL_DOCUMENT")
-EMBEDDING_DIMENSION = int(_env("EMBEDDING_DIMENSION", "768"))
+EMBEDDING_DIMENSION = int(_env("EMBEDDING_DIMENSION", "1024"))
 
 # LLM configuration (now using Google Gemini)
 LLM_PROVIDER = _env("LLM_PROVIDER", "gemini")

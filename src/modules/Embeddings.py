@@ -6,6 +6,7 @@ Optimized for batch processing, caching, and handling millions of embeddings.
 """
 
 import os
+import sqlite3
 import threading
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any, Generator
@@ -1078,6 +1079,23 @@ class NVIDIAEmbedding(EmbeddingModel):
             return np.zeros((len(texts), self.dimension), dtype=np.float32)
         
         try:
+            # SAFETY: Truncate texts exceeding NVIDIA's per-text token limit (8192)
+            # Use character-based estimate: ~4 chars per token for English text
+            MAX_TOKENS = 7500  # Leave margin below 8192 limit
+            MAX_CHARS = MAX_TOKENS * 4  # ~30,000 chars
+            
+            truncated_texts = []
+            for text in valid_texts:
+                if len(text) > MAX_CHARS:
+                    logger.warning(
+                        f"Truncating oversized text ({len(text)} chars, ~{len(text)//4} tokens) "
+                        f"to {MAX_CHARS} chars for NVIDIA embedding API"
+                    )
+                    truncated_texts.append(text[:MAX_CHARS])
+                else:
+                    truncated_texts.append(text)
+            valid_texts = truncated_texts
+            
             # Process in batches if needed
             all_embeddings = []
             
@@ -1122,10 +1140,102 @@ class NVIDIAEmbedding(EmbeddingModel):
         return self.model_name_str
 
 
+class _EmbeddingDiskCache:
+    """SQLite-backed persistent embedding cache.
+    
+    Stores {text_hash -> embedding_vector} on disk so embeddings survive
+    process restarts. Avoids re-embedding identical text across rebuilds
+    and queries.
+    
+    Schema:
+        cache_key  TEXT PRIMARY KEY  -- SHA-256 hash of (model_name + text)
+        embedding  BLOB              -- numpy array serialized as bytes
+        dimension  INTEGER           -- embedding dimension for validation
+        created_at TEXT              -- ISO timestamp
+    """
+
+    def __init__(self, cache_dir: str, model_name: str):
+        os.makedirs(cache_dir, exist_ok=True)
+        db_path = os.path.join(cache_dir, "embedding_cache.db")
+        self._model_name = model_name
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.Lock()
+        self._conn.execute("PRAGMA journal_mode=WAL")  # concurrent reads
+        self._conn.execute("PRAGMA synchronous=NORMAL")  # faster writes
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                cache_key  TEXT PRIMARY KEY,
+                embedding  BLOB NOT NULL,
+                dimension  INTEGER NOT NULL,
+                model_name TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        self._conn.commit()
+        logger.info(f"Disk embedding cache opened at {db_path}")
+
+    def load_all(self) -> Dict[str, np.ndarray]:
+        """Load all cached embeddings for the current model into memory."""
+        cache = {}
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT cache_key, embedding, dimension FROM embeddings WHERE model_name = ?",
+                (self._model_name,)
+            )
+            for row in cursor:
+                key, blob, dim = row
+                vec = np.frombuffer(blob, dtype=np.float32).copy()
+                if len(vec) == dim:
+                    cache[key] = vec
+        logger.info(f"Loaded {len(cache)} cached embeddings from disk")
+        return cache
+
+    def put_batch(self, items: List[tuple]):
+        """Persist multiple (cache_key, embedding) pairs in one transaction."""
+        if not items:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO embeddings (cache_key, embedding, dimension, model_name) VALUES (?, ?, ?, ?)",
+                [
+                    (key, emb.astype(np.float32).tobytes(), len(emb), self._model_name)
+                    for key, emb in items
+                ]
+            )
+            self._conn.commit()
+
+    def count(self) -> int:
+        """Return total cached entries for this model."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE model_name = ?",
+                (self._model_name,)
+            ).fetchone()
+            return row[0] if row else 0
+
+    def db_size_mb(self) -> float:
+        """Return the SQLite file size in MB."""
+        with self._lock:
+            row = self._conn.execute("PRAGMA page_count").fetchone()
+            page_count = row[0] if row else 0
+            row = self._conn.execute("PRAGMA page_size").fetchone()
+            page_size = row[0] if row else 4096
+            return (page_count * page_size) / (1024 * 1024)
+
+    def close(self):
+        """Close the database connection."""
+        with self._lock:
+            self._conn.close()
+
+
 class EmbeddingService:
     """Service for generating and managing embeddings
     
     Abstracts away model details and provides a clean API.
+    Features:
+    - In-memory LRU cache for fast repeated lookups
+    - SQLite disk cache for persistence across restarts
+    - Deduplication: identical texts embedded only once per batch
     """
     
     def __init__(
@@ -1133,33 +1243,49 @@ class EmbeddingService:
         model: EmbeddingModel,
         cache_dir: Optional[str] = None,
         use_cache: bool = True,
-        max_cache_size: int = 5000
+        max_cache_size: int = 100000
     ):
         """Initialize embedding service
         
         Args:
             model: EmbeddingModel instance to use
-            cache_dir: Directory to cache embeddings (optional)
+            cache_dir: Directory for persistent SQLite cache (auto-created)
             use_cache: Whether to use caching
-            max_cache_size: Maximum number of embeddings to cache
+            max_cache_size: Maximum in-memory cache entries
         """
         self.model = model
         self.cache_dir = cache_dir
         self.use_cache = use_cache
         self.max_cache_size = max_cache_size
         self._embedding_cache: Dict[str, np.ndarray] = {}
+        self._cache_lock = threading.Lock()
         self._cache_hits = 0
         self._cache_misses = 0
+        self._disk_cache: Optional[_EmbeddingDiskCache] = None
         
-        logger.info(f"EmbeddingService initialized with {model.model_name}")
+        # Initialize persistent disk cache
+        if use_cache and cache_dir:
+            try:
+                self._disk_cache = _EmbeddingDiskCache(cache_dir, model.model_name)
+                # Preload disk cache into memory for fast lookups
+                self._embedding_cache = self._disk_cache.load_all()
+                logger.info(
+                    f"EmbeddingService initialized with {model.model_name}, "
+                    f"disk cache: {len(self._embedding_cache)} entries preloaded"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to initialize disk cache, using memory-only: {e}")
+                self._disk_cache = None
+        else:
+            logger.info(f"EmbeddingService initialized with {model.model_name}")
     
     def _cache_key(self, text: str) -> str:
-        """Generate fast cache key for text
+        """Generate cache key using SHA-256 for disk persistence safety.
         
-        Uses Python's built-in hash() for speed (10x faster than MD5).
-        Collision-safe: combines hash with text length.
+        Combines model name + text to avoid cross-model collisions.
         """
-        return f"{hash(text)}_{len(text)}"
+        content = f"{self.model.model_name}:{text}"
+        return hashlib.sha256(content.encode('utf-8', errors='replace')).hexdigest()
     
     def embed_text(self, text: str) -> EmbeddingResult:
         """Embed a single text with caching
@@ -1173,17 +1299,26 @@ class EmbeddingService:
         cache_key = self._cache_key(text) if self.use_cache else None
         
         # Check cache
-        if cache_key and cache_key in self._embedding_cache:
-            self._cache_hits += 1
-            embedding = self._embedding_cache[cache_key]
-        else:
-            if self.use_cache:
-                self._cache_misses += 1
+        with self._cache_lock:
+            if cache_key and cache_key in self._embedding_cache:
+                self._cache_hits += 1
+                embedding = self._embedding_cache[cache_key]
+                found_in_cache = True
+            else:
+                if self.use_cache:
+                    self._cache_misses += 1
+                found_in_cache = False
+
+        if not found_in_cache:
             embedding = self.model.embed(text)
             
-            # Cache if space available
-            if self.use_cache and embedding is not None and len(self._embedding_cache) < self.max_cache_size:
-                self._embedding_cache[cache_key] = embedding
+            # Cache in memory + disk
+            if self.use_cache and embedding is not None:
+                with self._cache_lock:
+                    if len(self._embedding_cache) < self.max_cache_size:
+                        self._embedding_cache[cache_key] = embedding
+                if self._disk_cache:
+                    self._disk_cache.put_batch([(cache_key, embedding)])
         
         return EmbeddingResult(
             text=text,
@@ -1199,6 +1334,7 @@ class EmbeddingService:
         - Fast hash-based cache lookup (avoids redundant API calls)
         - Deduplication: identical texts are embedded only once
         - Only uncached unique texts are sent to the model
+        - New embeddings persisted to disk cache in one transaction
         - Results are scattered back to correct positions
         
         Args:
@@ -1219,28 +1355,37 @@ class EmbeddingService:
         uncached_unique_texts = {}  # text -> first index (deduplication)
         text_to_cache_key = {}  # text -> cache_key (avoid recomputing)
         
-        for idx, text in enumerate(texts):
-            if not text or not text.strip():
-                continue
-            
-            if self.use_cache:
-                cache_key = self._cache_key(text)
-                text_to_cache_key[text] = cache_key
-                
-                if cache_key in self._embedding_cache:
-                    embeddings[idx] = self._embedding_cache[cache_key]
-                    self._cache_hits += 1
+        with self._cache_lock:
+            for idx, text in enumerate(texts):
+                if not text or not text.strip():
                     continue
                 
-                self._cache_misses += 1
-            
-            # Track unique uncached texts (deduplication)
-            if text not in uncached_unique_texts:
-                uncached_unique_texts[text] = idx
+                if self.use_cache:
+                    cache_key = self._cache_key(text)
+                    text_to_cache_key[text] = cache_key
+                    
+                    if cache_key in self._embedding_cache:
+                        embeddings[idx] = self._embedding_cache[cache_key]
+                        self._cache_hits += 1
+                        continue
+                    
+                    self._cache_misses += 1
+                
+                # Track unique uncached texts (deduplication)
+                if text not in uncached_unique_texts:
+                    uncached_unique_texts[text] = idx
         
         # Phase 2: Embed only unique uncached texts
+        new_cache_entries = []  # collect for batch disk write
         if uncached_unique_texts:
             unique_texts = list(uncached_unique_texts.keys())
+            
+            if unique_texts:
+                logger.info(
+                    f"Embedding {len(unique_texts)} new texts "
+                    f"({len(texts) - len(unique_texts)} cache hits)"
+                )
+            
             unique_embeddings = self.model.embed_batch(unique_texts, batch_size=batch_size)
             
             # Build text -> embedding mapping from unique results
@@ -1249,11 +1394,21 @@ class EmbeddingService:
                 emb = unique_embeddings[i]
                 text_to_embedding[text] = emb
                 
-                # Cache the result
-                if self.use_cache and emb is not None and len(self._embedding_cache) < self.max_cache_size:
-                    self._embedding_cache[text_to_cache_key.get(text, self._cache_key(text))] = emb
+                # Cache in memory
+                if self.use_cache and emb is not None:
+                    ck = text_to_cache_key.get(text, self._cache_key(text))
+                    with self._cache_lock:
+                        if len(self._embedding_cache) < self.max_cache_size:
+                            self._embedding_cache[ck] = emb
+                    new_cache_entries.append((ck, emb))
         else:
             text_to_embedding = {}
+            if texts:
+                logger.info(f"All {len(texts)} texts found in cache (100% hit rate)")
+        
+        # Persist new embeddings to disk in one transaction
+        if new_cache_entries and self._disk_cache:
+            self._disk_cache.put_batch(new_cache_entries)
         
         # Phase 3: Scatter results back to all positions
         results = []
@@ -1279,15 +1434,22 @@ class EmbeddingService:
         total_cache = self._cache_hits + self._cache_misses
         hit_ratio = self._cache_hits / total_cache if total_cache > 0 else 0
         
-        return {
+        stats = {
             "model_name": self.model.model_name,
             "embedding_dimension": self.model.dimension,
             "cache_hits": self._cache_hits,
             "cache_misses": self._cache_misses,
             "cache_hit_ratio": hit_ratio,
-            "cached_entries": len(self._embedding_cache),
-            "cache_enabled": self.use_cache
+            "memory_cache_entries": len(self._embedding_cache),
+            "cache_enabled": self.use_cache,
+            "disk_cache_enabled": self._disk_cache is not None,
         }
+        
+        if self._disk_cache:
+            stats["disk_cache_entries"] = self._disk_cache.count()
+            stats["disk_cache_size_mb"] = round(self._disk_cache.db_size_mb(), 2)
+        
+        return stats
 
 
 def create_embedding_model(
@@ -1323,10 +1485,15 @@ def create_embedding_model(
     raise ValueError(f"Unknown embedding model type: {model_type}")
 
 
+# Default cache directory
+DEFAULT_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "cache")
+
+
 def create_embedding_service(
     model_type: str = "bge-m3",
     use_cache: bool = True,
-    max_cache_size: int = 5000,
+    max_cache_size: int = 100000,
+    cache_dir: Optional[str] = None,
     **kwargs
 ) -> EmbeddingService:
     """Factory function to create embedding service
@@ -1334,11 +1501,22 @@ def create_embedding_service(
     Args:
         model_type: Type of embedding model
         use_cache: Whether to enable caching
-        max_cache_size: Maximum number of embeddings to cache
+        max_cache_size: Maximum in-memory cache entries
+        cache_dir: Directory for persistent cache (default: data/cache/)
         **kwargs: Additional arguments for model
         
     Returns:
-        EmbeddingService instance
+        EmbeddingService instance with disk-backed persistent cache
     """
     model = create_embedding_model(model_type, **kwargs)
-    return EmbeddingService(model, use_cache=use_cache, max_cache_size=max_cache_size)
+    
+    # Use provided cache_dir, env var, or default
+    if cache_dir is None:
+        cache_dir = os.environ.get("EMBEDDING_CACHE_DIR", DEFAULT_CACHE_DIR)
+    
+    return EmbeddingService(
+        model,
+        cache_dir=cache_dir,
+        use_cache=use_cache,
+        max_cache_size=max_cache_size
+    )

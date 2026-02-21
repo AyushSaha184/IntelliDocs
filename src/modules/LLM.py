@@ -66,7 +66,8 @@ class BaseLLM(ABC):
         default_system = (
             "You are a helpful AI assistant. Answer the user's question based on the provided context. "
             "If the context doesn't contain relevant information, say so honestly. "
-            "Be concise, accurate, and cite the relevant parts of the context when possible."
+            "Be concise and accurate. Do NOT cite sources inline or use bracketed citations like [Context 1]. "
+            "The system will automatically attach the source documents to your response."
         )
         
         system = system_prompt or default_system
@@ -235,6 +236,7 @@ class OpenRouterLLM(BaseLLM):
                 ],
                 "temperature": temp,
                 "max_tokens": tokens,
+                "reasoning": {"enabled": True},
             }
 
             # Make API request
@@ -302,7 +304,7 @@ def create_llm(
         )
     
     elif provider_normalized in ["openrouter", "open-router"]:
-        model_name = model_name or os.getenv("LLM_MODEL", "deepseek/deepseek-r1-0528:free")
+        model_name = model_name or os.getenv("LLM_MODEL", "nvidia/nemotron-3-nano-30b-a3b:free")
         api_key = kwargs.pop("api_key", None) or os.getenv("OPENROUTER_API_KEY")
         
         if not api_key:

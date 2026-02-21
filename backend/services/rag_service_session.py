@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.Retriever import RAGRetriever, LMStudioReranker, LocalCrossEncoderReranker
+from src.modules.Retriever import RAGRetriever, NvidiaReranker, LocalCrossEncoderReranker
 from src.modules.QueryGeneration import QueryHandler, QueryResult
 from src.modules.LLM import create_llm
 from src.utils.Logger import get_logger
@@ -16,6 +16,7 @@ from config.config import (
     HF_TOKEN,
     HF_INFERENCE_PROVIDER,
     GEMINI_API_KEY,
+    NVIDIA_API_KEY,
     EMBEDDING_PROVIDER,
     EMBEDDING_MODEL,
     EMBEDDING_NORMALIZE,
@@ -47,13 +48,17 @@ _llm_lock = threading.Lock()
 _shared_reranker = None
 _reranker_lock = threading.Lock()
 
+# Shared embedding service instance
+_shared_embedding_service = None
+_embedding_lock = threading.Lock()
+
 
 def _get_shared_reranker():
     """Get or create shared reranker instance (thread-safe).
     
     Uses RERANKER_PROVIDER to choose between:
-      - 'lm-studio': Calls LM Studio /v1/rerank endpoint (local dev)
       - 'local': In-process CrossEncoder (Docker / Render deployment)
+      - default (nvidia / lm-studio / anything else): NVIDIA API reranker
     """
     global _shared_reranker
     if not USE_RERANKER:
@@ -71,14 +76,13 @@ def _get_shared_reranker():
                     )
                     logger.info(f"Initialized local CrossEncoder reranker: {RERANKER_MODEL}")
                 else:
-                    # Default: LM Studio API
-                    _shared_reranker = LMStudioReranker(
-                        base_url=LM_STUDIO_BASE_URL,
+                    # Default: Nvidia API
+                    _shared_reranker = NvidiaReranker(
                         model=RERANKER_MODEL,
                         min_chunks_to_rerank=MIN_CHUNKS_TO_RERANK,
                         top_k_after_rerank=TOP_K_AFTER_RERANK
                     )
-                    logger.info(f"Initialized LM Studio reranker: {RERANKER_MODEL}")
+                    logger.info(f"Initialized Nvidia reranker: {RERANKER_MODEL}")
     return _shared_reranker
 
 
@@ -99,6 +103,12 @@ def _build_embedding_kwargs() -> dict:
             "api_key": GEMINI_API_KEY,
             "task_type": EMBEDDING_TASK_TYPE,
             "output_dimensionality": EMBEDDING_DIMENSION
+        })
+    elif EMBEDDING_PROVIDER.lower() in ["nvidia", "nvidia-build", "nvidia-api"]:
+        kwargs.update({
+            "api_key": NVIDIA_API_KEY,
+            "timeout": EMBEDDING_TIMEOUT,
+            "max_retries": EMBEDDING_MAX_RETRIES
         })
     elif EMBEDDING_PROVIDER.lower() in ["lm-studio", "lmstudio", "openai-compatible"]:
         # LM Studio uses OpenAI-compatible API - no device parameter needed
@@ -140,6 +150,27 @@ def _get_shared_llm():
         return _shared_llm
 
 
+def _get_shared_embedding_service():
+    """Get or create shared embedding service instance (singleton)."""
+    global _shared_embedding_service
+    
+    with _embedding_lock:
+        if _shared_embedding_service is not None:
+            return _shared_embedding_service
+            
+        try:
+            _shared_embedding_service = create_embedding_service(
+                model_type=EMBEDDING_PROVIDER,
+                **_build_embedding_kwargs()
+            )
+            logger.info("Shared EmbeddingService initialized")
+        except Exception as e:
+            logger.error(f"EmbeddingService initialization failed: {e}")
+            raise
+            
+        return _shared_embedding_service
+
+
 def get_session_query_handler(
     session_id: str,
     chunks_metadata: Dict[str, Any],
@@ -153,11 +184,8 @@ def get_session_query_handler(
         
         logger.info(f"Initializing query handler for session {session_id}")
         
-        # Create embedding service
-        embedding_service = create_embedding_service(
-            model_type=EMBEDDING_PROVIDER,
-            **_build_embedding_kwargs()
-        )
+        # Get shared embedding service
+        embedding_service = _get_shared_embedding_service()
         
         # Load session-specific vector store
         vector_store = FAISSVectorStore(
@@ -190,7 +218,8 @@ def get_session_query_handler(
             retriever=retriever,
             embedding_service=embedding_service,
             llm=llm,
-            top_k=5
+            top_k=5,
+            session_id=session_id
         )
         
         # Cache handler for this session

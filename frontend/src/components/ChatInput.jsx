@@ -41,43 +41,63 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
 
     const handleUploadAll = async () => {
         if (pendingFiles.length === 0) return;
-        
+
+        console.log('Starting upload of', pendingFiles.length, 'files');
         setUploading(true);
-        
+
         try {
             // Upload all files to the SAME session
             // Track session_id locally since React state updates are async
             let currentSessionId = null;
             for (const file of pendingFiles) {
+                console.log('Uploading file:', file.name, 'to session:', currentSessionId);
                 const result = await onUpload(file, currentSessionId);
+                console.log('Upload result for', file.name, ':', result);
                 if (result?.session_id) {
                     currentSessionId = result.session_id;
                 }
             }
-            
+
             // Clear pending files after successful upload
+            console.log('Uploads complete, clearing pending files');
             setPendingFiles([]);
         } catch (error) {
-            console.error('Upload error:', error);
+            console.error('Upload error in handleUploadAll:', error);
         } finally {
             setUploading(false);
+            console.log('Uploading state set to false');
         }
     };
 
     const isChatDisabled = disabled || uploading || isProcessing || !isProcessed;
 
+    const processedUploadedFiles = uploadedFiles.filter(f => f.isProcessed);
+    const unprocessedUploadedFiles = uploadedFiles.filter(f => !f.isProcessed);
+
     return (
         <div>
-            {/* Uploaded files box (shown after upload, before processing) */}
-            <UploadedFiles
-                files={uploadedFiles}
-                onProcess={onProcess}
-                isProcessing={isProcessing}
-                isProcessed={isProcessed}
-            />
+            {/* Processed files box */}
+            {processedUploadedFiles.length > 0 && (
+                <UploadedFiles
+                    files={processedUploadedFiles}
+                    onProcess={onProcess}
+                    isProcessing={false}
+                    isProcessed={true}
+                />
+            )}
+
+            {/* Unprocessed uploaded files box (newly added files waiting to be processed) */}
+            {unprocessedUploadedFiles.length > 0 && (
+                <UploadedFiles
+                    files={unprocessedUploadedFiles}
+                    onProcess={onProcess}
+                    isProcessing={isProcessing}
+                    isProcessed={false}
+                />
+            )}
 
             {/* File previews box (for files selected but not uploaded yet) */}
-            <FilePreviews 
+            <FilePreviews
                 files={pendingFiles}
                 onRemove={handleRemoveFile}
                 onUploadAll={handleUploadAll}
@@ -89,7 +109,7 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
                 <div className="flex items-end gap-1.5 sm:gap-2">
                     {/* File Upload Button */}
                     <div className="pb-1.5 sm:pb-2">
-                        <FileUpload 
+                        <FileUpload
                             onFilesSelected={handleFilesSelected}
                             disabled={disabled || uploading || isProcessing}
                             pendingFiles={pendingFiles}

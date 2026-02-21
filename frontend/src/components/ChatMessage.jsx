@@ -3,8 +3,16 @@ import ReactMarkdown from 'react-markdown';
 
 export default function ChatMessage({ message }) {
     const [showSources, setShowSources] = useState(false);
+    const [isCopied, setIsCopied] = useState(false);
+
     const isUser = message.role === 'user';
     const isSystem = message.role === 'system';
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(message.content);
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+    };
 
     // Render success message (processing complete)
     if (isSystem && message.isSuccess) {
@@ -54,13 +62,12 @@ export default function ChatMessage({ message }) {
 
             <div className={`flex-1 ${isUser ? 'flex justify-end' : ''}`}>
                 <div
-                    className={`rounded-lg px-3 sm:px-4 py-2 sm:py-3 max-w-[85%] ${
-                        isUser
-                            ? 'bg-[#10a37f] text-white'
-                            : message.isError
+                    className={`group rounded-lg px-3 sm:px-4 py-2 sm:py-3 max-w-[85%] relative ${isUser
+                        ? 'bg-[#10a37f] text-white'
+                        : message.isError
                             ? 'bg-red-900/20 border border-red-500/30 text-red-300'
                             : 'bg-[#444654] text-white'
-                    }`}
+                        }`}
                 >
                     {message.isTyping ? (
                         <div className="flex gap-1">
@@ -70,31 +77,75 @@ export default function ChatMessage({ message }) {
                         </div>
                     ) : (
                         <>
-                            <div className="prose prose-invert max-w-none text-xs sm:text-sm">
+                            {/* Action Bar (Copy) - Top Right */}
+                            <div className="absolute top-2 right-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity duration-200 z-10">
+                                <button
+                                    onClick={handleCopy}
+                                    className="p-1 rounded text-gray-300 hover:text-white hover:bg-black/20 transition-colors flex items-center justify-center bg-black/10 sm:bg-transparent shadow-sm sm:shadow-none backdrop-blur-sm sm:backdrop-blur-none"
+                                    title="Copy message"
+                                    aria-label="Copy message"
+                                >
+                                    {isCopied ? (
+                                        <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                        </svg>
+                                    ) : (
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                        </svg>
+                                    )}
+                                </button>
+                            </div>
+
+                            <div className="prose prose-invert max-w-none text-xs sm:text-sm pr-6">
                                 <ReactMarkdown>{message.content}</ReactMarkdown>
                             </div>
 
                             {message.sources && message.sources.length > 0 && (
-                                <div className="mt-2 sm:mt-3 pt-2 sm:pt-3 border-t border-white/20">
-                                    <button
-                                        onClick={() => setShowSources(!showSources)}
-                                        className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors"
-                                    >
-                                        <svg className={`w-3 h-3 sm:w-4 sm:h-4 transition-transform ${showSources ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                        </svg>
-                                        <span>{message.sources.length} source{message.sources.length !== 1 ? 's' : ''}</span>
-                                    </button>
+                                <div className="mt-4 pt-4 border-t border-white/20">
+                                    <ul className="text-xs sm:text-sm text-gray-400 list-disc pl-4 space-y-1">
+                                        {(() => {
+                                            // Deduplicate sources based on DocName + Page/Row
+                                            const uniqueSources = new Set();
+                                            const formattedSources = [];
 
-                                    {showSources && (
-                                        <div className="mt-2 space-y-2">
-                                            {message.sources.slice(0, 3).map((source, idx) => (
-                                                <div key={idx} className="text-xs bg-black/20 rounded p-2 border border-white/20">
-                                                    <p className="text-gray-300 line-clamp-2">{source}</p>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
+                                            message.sources.forEach((source) => {
+                                                // Matches "[Filename.pdf, Page X]" or "[Filename.csv, Row X]" 
+                                                const match = source.match(/^\[(.*?), (Page \d+|Row \d+)\]/i);
+
+                                                let docName = "Unknown Document";
+                                                let locationDesc = "";
+
+                                                if (match) {
+                                                    docName = match[1].trim();
+                                                    // Extract just the number from "Page X" or "Row X"
+                                                    const locMatch = match[2].match(/\d+/);
+                                                    if (locMatch) {
+                                                        locationDesc = ` (Page no.: ${locMatch[0]})`;
+                                                    }
+                                                } else {
+                                                    // Fallback if regex doesn't match perfectly
+                                                    const fallbackMatch = source.match(/^\[(.*?)\]/);
+                                                    if (fallbackMatch) {
+                                                        docName = fallbackMatch[1].trim();
+                                                    }
+                                                }
+
+                                                const key = `${docName}${locationDesc}`;
+
+                                                if (!uniqueSources.has(key)) {
+                                                    uniqueSources.add(key);
+                                                    formattedSources.push(`${docName}${locationDesc}`);
+                                                }
+                                            });
+
+                                            return formattedSources.map((src, idx) => (
+                                                <li key={idx} className="leading-relaxed">
+                                                    {src}
+                                                </li>
+                                            ));
+                                        })()}
+                                    </ul>
                                 </div>
                             )}
                         </>

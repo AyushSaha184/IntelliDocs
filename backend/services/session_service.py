@@ -138,6 +138,26 @@ class SessionManager:
         """Get session vector store directory."""
         return self._get_session_dir(session_id) / "vector_store"
     
+    def get_session_files(self, session_id: str) -> list:
+        """List all files in a session's documents directory.
+        
+        Returns:
+            List of dicts with 'name', 'size', and 'path' keys
+        """
+        docs_dir = self.get_documents_dir(session_id)
+        if not docs_dir.exists():
+            return []
+        
+        files = []
+        for f in docs_dir.iterdir():
+            if f.is_file():
+                files.append({
+                    "name": f.name,
+                    "size": f.stat().st_size,
+                    "path": str(f),
+                })
+        return files
+    
     def save_chunks_metadata(self, session_id: str, metadata: Dict[str, Any]):
         """Save chunk metadata for a session."""
         chunks_dir = self.get_chunks_dir(session_id)

@@ -4,7 +4,7 @@ from typing import Optional
 from pathlib import Path
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.Retriever import RAGRetriever, LMStudioReranker
+from src.modules.Retriever import RAGRetriever, NvidiaReranker
 from src.modules.QueryGeneration import QueryHandler, QueryResult
 from src.modules.LLM import create_llm
 from src.utils.Logger import get_logger
@@ -16,6 +16,7 @@ from config.config import (
     HF_TOKEN,
     HF_INFERENCE_PROVIDER,
     GEMINI_API_KEY,
+    NVIDIA_API_KEY,
     EMBEDDING_PROVIDER,
     EMBEDDING_MODEL,
     EMBEDDING_NORMALIZE,
@@ -35,12 +36,11 @@ _query_handler: Optional[QueryHandler] = None
 
 
 def _create_reranker():
-    """Create LM Studio reranker for local inference."""
+    """Create NVIDIA API reranker."""
     if not USE_RERANKER:
         return None
     
-    return LMStudioReranker(
-        base_url=LM_STUDIO_BASE_URL,
+    return NvidiaReranker(
         model=RERANKER_MODEL,
         min_chunks_to_rerank=MIN_CHUNKS_TO_RERANK,
         top_k_after_rerank=TOP_K_AFTER_RERANK
@@ -63,6 +63,10 @@ def _build_embedding_kwargs() -> dict:
             "api_key": GEMINI_API_KEY,
             "task_type": EMBEDDING_TASK_TYPE,
             "output_dimensionality": EMBEDDING_DIMENSION
+        })
+    elif EMBEDDING_PROVIDER.lower() in ["nvidia", "nvidia-build", "nvidia-api"]:
+        kwargs.update({
+            "api_key": NVIDIA_API_KEY,
         })
     else:
         kwargs["device"] = "cpu"

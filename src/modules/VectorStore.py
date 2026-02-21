@@ -158,7 +158,8 @@ class FAISSVectorStore:
         self,
         query_vector: np.ndarray,
         k: int = 5,
-        threshold: Optional[float] = None
+        threshold: Optional[float] = None,
+        filters: Optional[Dict[str, Any]] = None
     ) -> List[SearchResult]:
         """Search for similar vectors (optimized with cached reverse mapping)
         
@@ -166,6 +167,7 @@ class FAISSVectorStore:
             query_vector: Query embedding
             k: Number of results
             threshold: Distance threshold (optional)
+            filters: Optional dictionary of metadata key-value pairs to filter by
             
         Returns:
             List of SearchResult objects
@@ -176,8 +178,9 @@ class FAISSVectorStore:
         # Reshape query if needed
         query_vector = np.array(query_vector, dtype=np.float32).reshape(1, -1)
         
-        # Search FAISS index
-        distances, indices = self.index.search(query_vector, min(k, self.index.ntotal))
+        # Search FAISS index - expand search radius if filtering
+        fetch_k = min(k * 50 if filters else k, self.index.ntotal)
+        distances, indices = self.index.search(query_vector, fetch_k)
         distances = distances[0]
         indices = indices[0]
         
@@ -200,17 +203,36 @@ class FAISSVectorStore:
             if not meta:
                 continue
             
+            # Apply metadata filters if provided
+            if filters:
+                match = True
+                for fk, fv in filters.items():
+                    meta_val = meta.metadata.get(fk) if meta.metadata else None
+                    if meta_val is None:
+                        meta_val = getattr(meta, fk, None)
+                    
+                    if meta_val != fv:
+                        match = False
+                        break
+                
+                if not match:
+                    continue
+            
             # Convert distance to similarity score (0-1)
-            similarity = 1.0 / (1.0 + dist)
+            similarity = float(1.0 / (1.0 + dist))
             
             results.append(SearchResult(
                 document_id=meta.document_id,
                 chunk_id=meta.chunk_id,
                 text=meta.text,
                 similarity_score=similarity,
-                distance=dist,
+                distance=float(dist),
                 metadata=meta.metadata
             ))
+            
+            # Stop once we have reached the requested k
+            if len(results) >= k:
+                break
         
         return results
     
@@ -246,33 +268,48 @@ class FAISSVectorStore:
         Path(path).mkdir(parents=True, exist_ok=True)
         
         try:
-            # Save FAISS index
+            # Create temporary paths for atomic writes
             index_path = os.path.join(path, "index.faiss")
-            faiss.write_index(self.index, index_path)
+            index_tmp_path = index_path + ".tmp"
             
-            # Save metadata
             metadata_path = os.path.join(path, "metadata.json")
+            metadata_tmp_path = metadata_path + ".tmp"
+            
+            # Save FAISS index strictly to .tmp
+            faiss.write_index(self.index, index_tmp_path)
+            
+            # Save metadata to .tmp
             metadata_dict = {
                 vid: asdict(meta) for vid, meta in self.metadata_store.items()
             }
-            with open(metadata_path, 'w') as f:
+            with open(metadata_tmp_path, 'w') as f:
                 json.dump(metadata_dict, f, indent=2)
             
             # Save config
             config_path = os.path.join(path, "config.json")
+            config_tmp_path = config_path + ".tmp"
+
             config = {
                 "dimension": self.dimension,
                 "index_type": self.index_type,
                 "num_vectors": self.size(),
                 "saved_at": datetime.now().isoformat()
             }
-            with open(config_path, 'w') as f:
+            with open(config_tmp_path, 'w') as f:
                 json.dump(config, f, indent=2)
             
-            logger.info(f"Vector store saved to {path}")
+            # Atomic swaps: If any swap fails, the system safely aborts to the original state
+            os.replace(index_tmp_path, index_path)
+            os.replace(metadata_tmp_path, metadata_path)
+            os.replace(config_tmp_path, config_path)
+
+            logger.info(f"Vector store atomically saved to {path} (safe write)")
             return True
         except Exception as e:
-            logger.error(f"Error saving vector store: {e}")
+            logger.error(f"Error saving vector store atomically: {e}. Cleaning up temps...")
+            for tmp_file in [index_path + ".tmp", metadata_path + ".tmp", config_path + ".tmp"]:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
             return False
     
     def load(self, path: Optional[str] = None) -> bool:
@@ -410,7 +447,8 @@ class VectorStoreService:
         self,
         query_embedding: np.ndarray,
         k: int = 5,
-        threshold: Optional[float] = None
+        threshold: Optional[float] = None,
+        filters: Optional[Dict[str, Any]] = None
     ) -> List[SearchResult]:
         """Search for similar chunks
         
@@ -418,12 +456,18 @@ class VectorStoreService:
             query_embedding: Query embedding vector
             k: Number of results
             threshold: Similarity threshold
+            filters: Optional metadata filters
             
         Returns:
             List of SearchResult objects
         """
         self._searches_performed += 1
-        return self.store.search(query_embedding, k, threshold)
+        return self.store.search(
+            query_vector=query_embedding, 
+            k=k, 
+            threshold=threshold,
+            filters=filters
+        )
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get service statistics"""
