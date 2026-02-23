@@ -1,0 +1,39 @@
+@echo off
+setlocal
+echo ===================================================
+echo     IntelliDocs (RAG Assistant) Local Startup
+echo ===================================================
+echo.
+
+:: 1. Start PostgreSQL if needed
+echo [1/3] Checking PostgreSQL service...
+sc query "postgresql-x64-18" | find "RUNNING" >nul 2>&1
+if errorlevel 1 (
+    echo Starting PostgreSQL...
+    net start postgresql-x64-18
+) else (
+    echo PostgreSQL is already running.
+)
+echo.
+
+:: 2. Start Backend Server
+echo [2/3] Starting FastAPI Backend on port 8000...
+set PYTHONPATH=.
+start "RAG Backend" cmd /c "uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
+timeout /t 3 /nobreak >nul
+echo Backend started in a new window.
+echo.
+
+:: 3. Start Frontend Server
+echo [3/3] Starting Vite Frontend on port 5173...
+start "RAG Frontend" cmd /c "cd frontend && npm run dev"
+echo Frontend started in a new window.
+echo.
+
+echo ===================================================
+echo All services have been launched!
+echo - Frontend: http://localhost:5173
+echo - Backend API: http://localhost:8000/docs
+echo ===================================================
+echo.
+pause
