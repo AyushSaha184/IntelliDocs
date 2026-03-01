@@ -20,7 +20,8 @@ export default function App() {
         if (!text.trim() || isGenerating || !isProcessed || !sessionId) return;
 
         const userMessage = { role: 'user', content: text, timestamp: Date.now() };
-        setMessages(prev => [...prev, userMessage]);
+        // Remove the 'files processed' success banner when user starts chatting
+        setMessages(prev => [...prev.filter(m => !(m.role === 'system' && m.isSuccess)), userMessage]);
 
         setIsGenerating(true);
 
@@ -193,20 +194,12 @@ export default function App() {
                     <div className="flex-1 overflow-y-auto">
                         {messages.length === 0 && uploadedFiles.length === 0 ? (
                             <div className="flex flex-col items-center justify-center h-full px-4 py-6 text-center">
-                                <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-full bg-[#10a37f] flex items-center justify-center mb-3 sm:mb-4">
-                                    <svg className="w-6 h-6 sm:w-8 sm:h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                                    </svg>
-                                </div>
-                                <h2 className="text-xl sm:text-2xl font-semibold text-white mb-2">
-                                    Document AI Assistant
-                                </h2>
                                 <p className="text-gray-400 max-w-md mb-6 sm:mb-8 text-sm sm:text-base px-4">
                                     Upload documents and ask questions. I'll search through your files and provide accurate answers.
                                 </p>
 
                                 {/* Supported File Types Box */}
-                                <div className="max-w-3xl w-full bg-[#40414F] border border-white/20 rounded-lg p-4 sm:p-6">
+                                <div className="max-w-3xl w-full bg-[#40414F] rounded-lg p-4 sm:p-6" style={{ border: '2px solid white' }}>
                                     <div className="flex items-center gap-2 text-white mb-3 sm:mb-4">
                                         <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
