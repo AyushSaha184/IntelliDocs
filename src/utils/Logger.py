@@ -52,12 +52,22 @@ def _setup_structlog(log_dir: str, console_level: int, file_level: int):
         cache_logger_on_first_use=True,
     )
     
+    def _console_renderer(logger, method, event_dict):
+        """Output plain message text to console — no timestamp or level prefix."""
+        level = event_dict.get("level", "info").lower()
+        msg = event_dict.get("event", "")
+        if level in ("warning", "warn"):
+            return f"[WARNING] {msg}"
+        elif level in ("error", "critical"):
+            return f"[ERROR] {msg}"
+        return msg
+
     # Configure the formatters specifically for the handlers we just made
     formatter_json = structlog.stdlib.ProcessorFormatter(
         processor=structlog.processors.JSONRenderer(),
     )
     formatter_console = structlog.stdlib.ProcessorFormatter(
-        processor=structlog.dev.ConsoleRenderer(colors=True),
+        processor=_console_renderer,
     )
     
     # Map formatters to standard handlers
