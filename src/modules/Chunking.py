@@ -105,6 +105,7 @@ class ChunkMetadata:
     key_path: Optional[str] = None
     cell_type: Optional[str] = None
     char_offsets_approximate: bool = False
+    source_url: Optional[str] = None
 
 
 @dataclass
@@ -1335,7 +1336,8 @@ class TextChunker:
                 row_range=extra_metadata.get('row_range'),
                 key_path=extra_metadata.get('key_path'),
                 cell_type=extra_metadata.get('cell_type'),
-                char_offsets_approximate=extra_metadata.get('char_offsets_approximate', False)
+                char_offsets_approximate=extra_metadata.get('char_offsets_approximate', False),
+                source_url=extra_metadata.get('source_url') or extra_metadata.get('url') or extra_metadata.get('link'),
             )
             
             chunk = TextChunk(id=chunk_id, text=chunk_text, metadata=metadata)

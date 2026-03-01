@@ -1,6 +1,5 @@
 """Retriever wrapper for backend architecture."""
 
-from typing import Optional
 from src.modules.QueryGeneration import QueryResult
 from backend.services.rag_service import get_query_handler
 

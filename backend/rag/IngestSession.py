@@ -462,6 +462,8 @@ def ingest_documents_session(
                     "chunk_index": chunk.metadata.chunk_index,
                     "token_count": chunk.metadata.token_count,
                     "strategy": chunk.metadata.strategy,
+                    "page_number": chunk.metadata.page_number,
+                    "source_url": chunk.metadata.source_url,
                 }
 
             logger.info(f"[{session_id[:8]}] Chunked {file_name}: {len(chunks)} chunks")
@@ -521,6 +523,8 @@ def ingest_documents_session(
                     "chunk_id": chunk.id,
                     "text": chunk.text,
                     "document_name": chunk.metadata.document_name,
+                    "page_number": chunk.metadata.page_number,
+                    "source_url": chunk.metadata.source_url,
                 })
 
             vector_store.add_vectors(

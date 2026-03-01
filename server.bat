@@ -1,3 +1,7 @@
+::This file is used to start backend and frontend services for this project (only for local use)
+::Ignore this file if you are using this through official render link.
+::To start this file run ".\server.bat" through terminal.
+
 @echo off
 setlocal
 echo ===================================================

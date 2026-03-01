@@ -1,6 +1,5 @@
 """Ingestion placeholder wired to existing pipeline modules."""
 
-from typing import Optional
 from src.utils.Logger import get_logger
 from main import RAGPipeline
 

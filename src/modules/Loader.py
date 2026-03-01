@@ -8,12 +8,10 @@ import threading
 import warnings
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Set, Generator, Iterator
-from dataclasses import dataclass, asdict, field
-import logging
+from typing import List, Dict, Optional, Tuple, Set, Generator
+from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
-from collections import defaultdict
 
 try:
     from unstructured.partition.auto import partition  # type: ignore
@@ -115,9 +113,6 @@ class DocumentLoader:
         
         # Database configuration
         self.use_db = use_db
-        # For PostgreSQL, db_path is not used (network connection)
-        self.db_path = db_path  # Kept for backward compatibility, not used
-        
         self.batch_size = batch_size
         self.processed_docs: Dict[str, DocumentMetadata] = {}  # Only keep recent docs in memory
         self.hash_index: Set[str] = set()
@@ -364,9 +359,9 @@ class DocumentLoader:
                 if text.strip():
                     parts.append(text)
             
+            page_count = len(doc)
             doc.close()
             content = "\n".join(parts)
-            page_count = len(doc)
             
             return content, page_count
         except Exception as e:
@@ -537,8 +532,8 @@ class DocumentLoader:
                 # Use rglob (recursive glob) to find files in current dir and all subdirectories
                 for file_path in docs_path.rglob(f"*{ext}"):
                     if file_path.is_file():
-                        yield file_path
                         logger.debug(f"Discovered file: {file_path}")
+                        yield file_path
         except Exception as e:
             logger.error(f"Error during file discovery: {e}")
     
@@ -909,31 +904,10 @@ def load_documents(documents_dir: str = None, use_db: bool = True, batch_size: i
 
 # ============================================================================
 # ROBUST STREAMING UTILITIES (Migrated from backend/rag/ pdf_utils & csv_utils)
+# PDF utils: scanned PDF detection, OCR fallback, page-level streaming.
+# CSV utils: streaming row loading, delimiter/Q&A detection.
+# Used ONLY by backend session ingestion (IngestSession.py).
 # ============================================================================
-
-"""Robust PDF parsing utilities for the backend ingestion path.
-
-Features:
-- Scanned PDF detection (text vs image)
-- OCR fallback via Tesseract (optional dependency)
-- Page-level streaming for large PDFs (memory-efficient)
-- Malformed PDF recovery
-
-This module is ONLY used by the backend session ingestion (IngestSession.py).
-It does NOT affect the CLI --build pipeline.
-"""
-
-from pathlib import Path
-from typing import Generator, Tuple, Optional
-
-
-# Check for PyMuPDF
-try:
-    import fitz  # PyMuPDF
-    PYMUPDF_AVAILABLE = True
-except ImportError:
-    PYMUPDF_AVAILABLE = False
-    logger.warning("PyMuPDF not available — PDF parsing will be limited")
 
 # Check for OCR dependencies (optional)
 try:
@@ -1138,22 +1112,6 @@ def load_pdf_robust(file_path: str) -> str:
     except Exception as e:
         logger.error(f"Error loading PDF {file_path}: {e}")
         raise
-
-
-"""Streaming CSV loading utilities for the backend ingestion path.
-
-Features:
-- Streaming row-based loading for large CSVs (via pandas chunksize)
-- Auto-detection of delimiter and structure
-- Q&A column detection for optimized chunking
-- Memory-efficient: never loads entire CSV into RAM
-
-This module is ONLY used by the backend session ingestion (IngestSession.py).
-It does NOT affect the CLI --build pipeline.
-"""
-
-from pathlib import Path
-from typing import Generator, List, Dict, Optional, Tuple
 
 
 try:
