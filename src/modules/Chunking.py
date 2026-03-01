@@ -22,6 +22,7 @@ import csv
 import io
 import hashlib
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 
 try:
@@ -63,6 +64,7 @@ WHITESPACE_PATTERN = re.compile(r'\s+')
 # Table detection patterns
 TABLE_ROW_PATTERN = re.compile(r'^.+[|\t].+[|\t].+$', re.MULTILINE)  # Rows with | or tabs
 TABLE_MULTISPACE_PATTERN = re.compile(r'^.+\s{2,}.+\s{2,}.+$', re.MULTILINE)  # Rows with multiple spaces
+MULTISPACE_FINDALL_PATTERN = re.compile(r'  +')  # Pre-compiled for table detection
 
 
 class ChunkingStrategy(Enum):
@@ -181,6 +183,7 @@ class TextChunker:
         self._max_cache_size = 50000  # Configurable cache size
         self._cache_hits = 0
         self._cache_misses = 0
+        self._cache_lock = threading.Lock()  # Thread-safe cache writes
         
         Path(self.chunks_dir).mkdir(parents=True, exist_ok=True)
         
@@ -286,12 +289,11 @@ class TextChunker:
             # Ultra-fast fallback: ~4 chars per token
             count = max(1, text_len // 4)
         
-        # Cache with configurable size limit (FIFO with OrderedDict)
-        if len(self._token_cache) >= self._max_cache_size:
-            # Remove oldest item efficiently
-            self._token_cache.popitem(last=False)
-        
-        self._token_cache[text_hash] = count
+        # Cache with configurable size limit (FIFO with OrderedDict) - lock only the mutation
+        with self._cache_lock:
+            if len(self._token_cache) >= self._max_cache_size:
+                self._token_cache.popitem(last=False)
+            self._token_cache[text_hash] = count
         return count
     
     def get_token_count(self, text: str) -> int:
@@ -321,7 +323,8 @@ class TextChunker:
             char_offset = 0  # Track character position incrementally
             
             for i, word in enumerate(words):
-                word_tokens = self._count_tokens(word + ' ')
+                # Fast char-based estimation avoids expensive hash+tiktoken per word
+                word_tokens = max(1, (len(word) + 1) // 4)
                 
                 if current_tokens + word_tokens > self.chunk_size and current_chunk:
                     chunk_text = ' '.join(current_chunk)
@@ -382,36 +385,49 @@ class TextChunker:
         return chunks
     
     def _chunk_sliding_window(self, text: str, doc_id: str) -> List[Tuple[str, int, int]]:
-        """Chunk text using sliding window"""
+        """Chunk text using sliding window - O(n) optimized"""
         if not text:
             return []
         
         chunks = []
         words = text.split()
-        chunk_words = []
+        if not words:
+            return []
+        
+        # Precompute cumulative char offsets once - avoids O(n²) sum() in inner loop
+        word_offsets = [0]
+        for w in words:
+            word_offsets.append(word_offsets[-1] + len(w) + 1)
+        
+        # Track per-word token counts alongside window to allow O(1) overlap trimming
+        window_token_counts: List[int] = []
         start_idx = 0
+        current_tokens = 0
         
         for i, word in enumerate(words):
-            chunk_words.append(word)
-            current_tokens = self._count_tokens(' '.join(chunk_words))
+            word_tokens = max(1, len(word) // 4 + 1)
+            window_token_counts.append(word_tokens)
+            current_tokens += word_tokens
             
-            # If chunk is full, save it
             if current_tokens >= self.chunk_size:
+                chunk_words = words[start_idx:i + 1]
                 chunk_text = ' '.join(chunk_words)
-                # Calculate character positions
-                start_char = sum(len(w) + 1 for w in words[:start_idx])
+                start_char = word_offsets[start_idx]
                 end_char = start_char + len(chunk_text)
                 chunks.append((chunk_text, start_char, end_char))
                 
-                # Slide window by overlap
-                overlap_words = int(len(chunk_words) * self.chunk_overlap / self.chunk_size)
-                start_idx = max(start_idx + 1, i - overlap_words + 1)
-                chunk_words = words[start_idx:i+1]
+                # Slide: drop front words until overlap budget reached
+                overlap_word_count = int(len(window_token_counts) * self.chunk_overlap / self.chunk_size)
+                new_start_idx = max(start_idx + 1, i - overlap_word_count + 1)
+                dropped = new_start_idx - start_idx
+                window_token_counts = window_token_counts[dropped:]
+                current_tokens = sum(window_token_counts)
+                start_idx = new_start_idx
         
         # Add final chunk
-        if chunk_words:
-            chunk_text = ' '.join(chunk_words)
-            start_char = sum(len(w) + 1 for w in words[:start_idx])
+        if start_idx <= len(words) - 1:
+            chunk_text = ' '.join(words[start_idx:])
+            start_char = word_offsets[start_idx]
             end_char = start_char + len(chunk_text)
             chunks.append((chunk_text, start_char, end_char))
         
@@ -467,7 +483,7 @@ class TextChunker:
             has_pipe = '|' in line and line.count('|') >= 2
             has_tabs = '\t' in line and line.count('\t') >= 2
             # Multi-space: check for 2+ consecutive spaces separating at least 3 columns
-            has_multi_space = len(re.findall(r'  +', line)) >= 2 and len(line.split()) >= 3
+            has_multi_space = len(MULTISPACE_FINDALL_PATTERN.findall(line)) >= 2 and len(line.split()) >= 3
             
             is_table_row = has_pipe or has_tabs or has_multi_space
             
@@ -608,19 +624,20 @@ class TextChunker:
                         }
                     })
                     
-                    # Keep overlap for context using precomputed tokens
-                    overlap_chunk = []
+                    # Keep overlap - reuse already-computed token counts, no recomputation
+                    overlap_items: List[Tuple[str, int]] = []
                     overlap_tokens_count = 0
-                    for s, s_tokens in reversed(current_tokens_list):
+                    for item in reversed(current_tokens_list):
+                        s, s_tokens = item
                         if overlap_tokens_count + s_tokens > overlap_tokens:
                             break
-                        overlap_chunk.insert(0, s)
+                        overlap_items.insert(0, item)
                         overlap_tokens_count += s_tokens
                     
-                    current_chunk = overlap_chunk
-                    current_tokens_list = [(s, self._count_tokens(s)) for s in overlap_chunk]
-                    current_tokens = sum(t for _, t in current_tokens_list)
-                    start_char = start_char + len(chunk_text) - len(' '.join(overlap_chunk))
+                    current_chunk = [s for s, _ in overlap_items]
+                    current_tokens_list = overlap_items
+                    current_tokens = overlap_tokens_count
+                    start_char = start_char + len(chunk_text) - len(' '.join(current_chunk))
                 
                 current_chunk.append(sentence)
                 current_tokens_list.append((sentence, sentence_tokens))
@@ -647,8 +664,7 @@ class TextChunker:
             return []
         
         chunks = []
-        # Split by headers (# ## ###)
-        header_pattern = r'^(#{1,6})\s+(.+)$'
+        # Split by headers using pre-compiled HEADER_PATTERN (avoids per-call re.compile)
         lines = text.split('\n')
         
         current_section = []
@@ -658,7 +674,7 @@ class TextChunker:
         char_pos = 0
         
         for line in lines:
-            match = re.match(header_pattern, line)
+            match = HEADER_PATTERN.match(line)
             
             if match:
                 # Save previous section
@@ -961,12 +977,13 @@ class TextChunker:
                     # Identify other columns to treat as metadata (e.g., source_url, index)
                     metadata_cols = [col for col in df.columns if col != text_col]
                     
-                    for idx, row in df.iterrows():
+                    # Use to_dict('records') - 5-10x faster than iterrows() which creates a Series per row
+                    for idx, row in enumerate(df.to_dict('records')):
                         if pd.notna(row[text_col]) and str(row[text_col]).strip():
                             row_text = str(row[text_col])
                             
                             # Build metadata for this row
-                            row_metadata = {'row_index': int(idx), 'csv_mode': 'document'}
+                            row_metadata = {'row_index': idx, 'csv_mode': 'document'}
                             for m_col in metadata_cols:
                                 if pd.notna(row[m_col]):
                                     val = str(row[m_col])
@@ -1002,14 +1019,15 @@ class TextChunker:
                     known_cols = {query_col, answer_col, context_col, index_col}
                     other_cols = [col for col in df.columns if col not in known_cols]
                     
-                    for idx, row in df.iterrows():
+                    # Use to_dict('records') - 5-10x faster than iterrows() which creates a Series per row
+                    for idx, row in enumerate(df.to_dict('records')):
                         chunk_parts = []
                         
-                        if query_col and pd.notna(row[query_col]):
+                        if query_col and pd.notna(row.get(query_col)):
                             chunk_parts.append(f"Question: {row[query_col]}")
-                        if answer_col and pd.notna(row[answer_col]):
+                        if answer_col and pd.notna(row.get(answer_col)):
                             chunk_parts.append(f"Answer: {row[answer_col]}")
-                        if context_col and pd.notna(row[context_col]):
+                        if context_col and pd.notna(row.get(context_col)):
                             context_value = str(row[context_col])
                             if len(context_value) > 2000:  # Truncate very long contexts
                                 context_value = context_value[:2000] + "..."
@@ -1017,15 +1035,15 @@ class TextChunker:
                         
                         # Add other columns as metadata line
                         if other_cols:
-                            meta_parts = [f"{col}: {row[col]}" for col in other_cols if pd.notna(row[col])]
+                            meta_parts = [f"{col}: {row[col]}" for col in other_cols if pd.notna(row.get(col))]
                             if meta_parts:
                                 chunk_parts.append("Metadata: " + " | ".join(meta_parts))
                         
                         chunk_text = "\n".join(chunk_parts)
                         
                         if len(chunk_text.strip()) > 20:
-                            chunk_metadata = {'row_index': int(idx), 'csv_mode': 'qa'}
-                            if index_col and pd.notna(row[index_col]):
+                            chunk_metadata = {'row_index': idx, 'csv_mode': 'qa'}
+                            if index_col and pd.notna(row.get(index_col)):
                                 chunk_metadata['document_index'] = str(row[index_col])
                             
                             chunks.append({
@@ -1563,15 +1581,23 @@ class TextChunker:
         if not valid_docs:
             return all_chunks
         
-        # Process documents with minimal overhead
-        for doc in valid_docs:
-            chunks = self.chunk_text(doc.content, doc.id, doc.name)
-            if chunks:
-                all_chunks[doc.id] = chunks
-                
-                # Optionally save chunk metadata
-                if save_chunks:
-                    self._save_chunks(doc.id, chunks)
+        # Process documents in parallel - tiktoken releases the GIL so threads give real speedup
+        max_workers = min(4, len(valid_docs))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_doc = {
+                executor.submit(self.chunk_text, doc.content, doc.id, doc.name): doc
+                for doc in valid_docs
+            }
+            for future in as_completed(future_to_doc):
+                doc = future_to_doc[future]
+                try:
+                    chunks = future.result()
+                    if chunks:
+                        all_chunks[doc.id] = chunks
+                        if save_chunks:
+                            self._save_chunks(doc.id, chunks)
+                except Exception as e:
+                    logger.error(f"Error chunking document {doc.id}: {e}")
         
         return all_chunks
     
@@ -1643,7 +1669,7 @@ class TextChunker:
             "cache_hits": self._cache_hits,
             "cache_misses": self._cache_misses,
             "cache_size": len(self._token_cache),
-            "cache_maxsize": 10000
+            "cache_maxsize": self._max_cache_size
         }
 
 

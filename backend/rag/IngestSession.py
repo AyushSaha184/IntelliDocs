@@ -530,7 +530,7 @@ def ingest_documents_session(
             )
 
             total_embedded += len(batch)
-            logger.info(
+            logger.debug(
                 f"[{session_id[:8]}] Embedded batch {batch_start // EMBEDDING_BATCH_SIZE + 1}: "
                 f"{total_embedded}/{len(all_chunks)} chunks"
             )

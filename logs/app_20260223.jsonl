@@ -1,0 +1,27 @@
+{"event": "PyTorch version 2.10.0 available."}
+{"event": "Polars version 1.36.1 available."}
+{"event": "Environment variable FAISS_OPT_LEVEL is not set, so let's pick the instruction set according to the current CPU"}
+{"event": "Loading faiss with AVX2 support."}
+{"event": "Successfully loaded faiss with AVX2 support."}
+{"event": "Clearing existing databases (use --incremental to skip)...", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.808695Z"}
+{"event": "  [INFO] Connecting to PostgreSQL...", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.808695Z"}
+{"event": "  [INFO] Terminating other connections...", "level": "debug", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.883238Z"}
+{"event": "  [OK] Cleared PostgreSQL tables (0 total rows deleted)", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.884016Z"}
+{"event": "  [OK] Cleared vector_store", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.899220Z"}
+{"event": "Auto-detecting pipeline mode: 10 documents found", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.902812Z"}
+{"event": "Threshold: 10 documents", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.902812Z"}
+{"event": "[OK] Using PARALLEL pipeline (document count >= 10)", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.902812Z"}
+{"event": "PARALLEL PIPELINE mode (optimized CPU/GPU distribution)", "level": "info", "logger": "__main__", "timestamp": "2026-02-23T15:30:32.902812Z"}
+{"event": "No CUDA GPU detected, using CPU-only mode", "level": "info", "logger": "src.modules.ParallelPipeline", "timestamp": "2026-02-23T15:30:32.902812Z"}
+{"event": "Initializing embedding service on cpu", "level": "info", "logger": "src.modules.ParallelPipeline", "timestamp": "2026-02-23T15:30:32.905590Z"}
+{"event": "PyTorch version 2.10.0 available."}
+{"event": "Polars version 1.36.1 available."}
+{"event": "Environment variable FAISS_OPT_LEVEL is not set, so let's pick the instruction set according to the current CPU"}
+{"event": "Loading faiss with AVX2 support."}
+{"event": "Successfully loaded faiss with AVX2 support."}
+{"event": "Starting new HTTPS connection (1): packages.unstructured.io:443"}
+{"event": "https://packages.unstructured.io:443 \"GET /python-telemetry?version=0.20.2&platform=Windows&python3.12&arch=AMD64&gpu=True&dev=false HTTP/1.1\" 200 594"}
+{"event": "SessionManager initializing with base dir: C:\\VS Code\\Projects\\RAG_Assistant\\Enterprise-ai-assistant\\data\\sessions", "level": "info", "logger": "backend.services.session_service", "timestamp": "2026-02-23T15:38:11.377662Z"}
+{"event": "Cleanup scheduler started (interval: 600s)", "level": "info", "logger": "backend.services.cleanup_scheduler", "timestamp": "2026-02-23T15:38:11.377662Z"}
+{"event": "RetrievalCache initialized at C:\\VS Code\\Projects\\RAG_Assistant\\Enterprise-ai-assistant\\data\\cache\\retrieval_cache.db", "level": "info", "logger": "src.modules.QueryCache", "timestamp": "2026-02-23T15:38:11.429601Z"}
+{"event": "LLMCache initialized at C:\\VS Code\\Projects\\RAG_Assistant\\Enterprise-ai-assistant\\data\\cache\\llm_cache.db", "level": "info", "logger": "src.modules.QueryCache", "timestamp": "2026-02-23T15:38:11.446405Z"}
