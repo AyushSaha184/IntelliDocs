@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Complete RAG System - Build & Query - Enterprise Scale
 
@@ -13,7 +14,7 @@ Usage:
     python main.py --api                # Start API server
     python main.py --test "query text"  # Test a query
 """
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import sys
 import os
 from pathlib import Path
@@ -175,9 +176,10 @@ def clear_postgres_tables():
         return False
 
 
+
 # Global state for API
-pipeline_global: Optional['RAGPipeline'] = None
-query_handler_global: Optional['QueryHandler'] = None
+pipeline_global: Any = None
+query_handler_global: Any = None
 
 
 def _build_embedding_kwargs(device: str, model_name: Optional[str] = None) -> Dict[str, object]:
@@ -337,7 +339,7 @@ class RAGPipeline:
         
         logger.info("Enterprise RAG Pipeline initialized with DB backends")
     
-    def step_2_chunk_documents_batch(self, documents: List[DocumentMetadata]) -> List[TextChunk]:
+    def step_2_chunk_documents_batch(self, documents: List[Any]) -> List[Any]:
         """Step 2: Chunk documents in batches with database persistence
         
         Args:
@@ -376,7 +378,7 @@ class RAGPipeline:
         
         return chunks_batch
     
-    def step_3_generate_embeddings_batch(self, chunks: List[TextChunk], save_to_store: bool = True, save_chunks_to_db: bool = False) -> Dict[str, np.ndarray]:
+    def step_3_generate_embeddings_batch(self, chunks: List[Any], save_to_store: bool = True, save_chunks_to_db: bool = False) -> Dict[str, Any]:
         """Step 3: Generate embeddings for chunks in batches
         
         Args:
