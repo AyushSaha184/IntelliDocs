@@ -13,7 +13,7 @@ Usage:
     python main.py --api                # Start API server
     python main.py --test "query text"  # Test a query
 """
-from typing import Dict, List, Optional, Generator
+from typing import Dict, List, Optional
 import sys
 import os
 from pathlib import Path
@@ -27,22 +27,63 @@ import shutil
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
-from src.modules.Loader import DocumentLoader, DocumentMetadata, load_documents
-from src.modules.Chunking import TextChunker, TextChunk, ChunkingStrategy, create_chunker
-from src.modules.Embeddings import create_embedding_service
-from src.modules.VectorStore import FAISSVectorStore
-from src.modules.Retriever import RAGRetriever, NvidiaReranker
-from src.modules.QueryGeneration import QueryHandler
-from src.modules.LLM import create_llm, BaseLLM
-from src.modules.ParallelPipeline import ParallelRAGPipeline, GPUConfig
 from src.utils.Logger import get_logger
+
+# Heavy ML imports are deferred to avoid slow startup on every invocation.
+# They are loaded lazily inside _load_heavy_imports() which is called once from main().
+DocumentLoader = DocumentMetadata = load_documents = None
+TextChunker = TextChunk = ChunkingStrategy = create_chunker = None
+create_embedding_service = None
+FAISSVectorStore = None
+RAGRetriever = NvidiaReranker = None
+QueryHandler = None
+create_llm = BaseLLM = None
+ParallelRAGPipeline = GPUConfig = None
+
+
+def _load_heavy_imports():
+    """Load heavy ML/data libraries. Called once at startup before any pipeline work."""
+    global DocumentLoader, DocumentMetadata, load_documents
+    global TextChunker, TextChunk, ChunkingStrategy, create_chunker
+    global create_embedding_service
+    global FAISSVectorStore
+    global RAGRetriever, NvidiaReranker
+    global QueryHandler
+    global create_llm, BaseLLM
+    global ParallelRAGPipeline, GPUConfig
+
+    from src.modules.Loader import DocumentLoader as _DL, DocumentMetadata as _DM, load_documents as _ld
+    DocumentLoader, DocumentMetadata, load_documents = _DL, _DM, _ld
+
+    from src.modules.Chunking import TextChunker as _TC, TextChunk as _TCh, ChunkingStrategy as _CS, create_chunker as _cc
+    TextChunker, TextChunk, ChunkingStrategy, create_chunker = _TC, _TCh, _CS, _cc
+
+    from src.modules.Embeddings import create_embedding_service as _ces
+    create_embedding_service = _ces
+
+    from src.modules.VectorStore import FAISSVectorStore as _FVS
+    FAISSVectorStore = _FVS
+
+    from src.modules.Retriever import RAGRetriever as _RR, NvidiaReranker as _NR
+    RAGRetriever, NvidiaReranker = _RR, _NR
+
+    from src.modules.QueryGeneration import QueryHandler as _QH
+    QueryHandler = _QH
+
+    from src.modules.LLM import create_llm as _cllm, BaseLLM as _BLLM
+    create_llm, BaseLLM = _cllm, _BLLM
+
+    from src.modules.ParallelPipeline import ParallelRAGPipeline as _PRP, GPUConfig as _GC
+    ParallelRAGPipeline, GPUConfig = _PRP, _GC
+
+    logger.info("Heavy ML imports loaded successfully.")
 from config.config import (
     LLM_PROVIDER,
     LLM_MODEL,
@@ -296,30 +337,6 @@ class RAGPipeline:
         
         logger.info("Enterprise RAG Pipeline initialized with DB backends")
     
-    def step_1_load_documents_stream(self) -> Generator[DocumentMetadata, None, None]:
-        """Step 1: Stream documents from directory (memory efficient for millions)
-        
-        Yields:
-            DocumentMetadata objects one at a time
-        """
-        step_start = time.time()
-        logger.info("STEP 1: Streaming Documents")
-        
-        loaded_count = 0
-        for doc in self.document_loader.load_all_documents(store_content=True):
-            if doc:
-                loaded_count += 1
-                yield doc
-                
-                # Log progress
-                if loaded_count % (BATCH_SIZE_DOCS * 5) == 0:
-                    logger.info(f"Streamed {loaded_count} documents")
-        
-        step_time = time.time() - step_start
-        self.processing_stats["step_1_load_documents"] = step_time
-        self.processing_stats["total_documents"] = loaded_count
-        logger.info(f"Step 1: Streamed {loaded_count} documents in {step_time:.2f}s")
-    
     def step_2_chunk_documents_batch(self, documents: List[DocumentMetadata]) -> List[TextChunk]:
         """Step 2: Chunk documents in batches with database persistence
         
@@ -427,171 +444,6 @@ class RAGPipeline:
         
         return embeddings_dict
     
-    def build_pipeline_scalable(self) -> bool:
-        """Build RAG pipeline with streaming for millions of documents"""
-        pipeline_start = time.time()
-        logger.info("="*80)
-        logger.info("BUILDING ENTERPRISE RAG PIPELINE - SCALABLE MODE")
-        logger.info("="*80)
-        
-        try:
-            docs_processed = 0
-            chunks_batch = []
-            
-            # Stream and process documents in batches
-            for doc in self.step_1_load_documents_stream():
-                # Get content from database
-                if self.document_loader.use_db:
-                    content = self.document_loader.get_document_content(doc.id)
-                    if not content:
-                        logger.warning(f"No content for {doc.id}")
-                        continue
-                else:
-                    content = doc.content if hasattr(doc, 'content') else ""
-                
-                # Chunk document
-                for chunk in self.text_chunker.chunk_document_stream(doc.id, content, doc.name):
-                    chunks_batch.append(chunk)
-                    
-                    # Process batch when reaching threshold
-                    # Note: save_chunks_to_db defaults to False for build performance
-                    # Vector store already contains all chunk data, so PostgreSQL storage
-                    # during build is redundant and slows down processing by 2-3x
-                    if len(chunks_batch) >= BATCH_SIZE_CHUNKS:
-                        self.step_3_generate_embeddings_batch(chunks_batch, save_to_store=True)
-                        chunks_batch = []
-                
-                docs_processed += 1
-                if docs_processed % (BATCH_SIZE_DOCS * 10) == 0:
-                    logger.info(f"Progress: {docs_processed} documents processed")
-            
-            # Process remaining chunks
-            if chunks_batch:
-                self.step_3_generate_embeddings_batch(chunks_batch, save_to_store=True)
-            
-            # Save vector store
-            self.vector_store.save()
-            logger.info(f"Vector store saved with {self.vector_store.get_size()} vectors")
-            
-            pipeline_time = time.time() - pipeline_start
-            self.processing_stats["total_time_seconds"] = pipeline_time
-            
-            logger.info("="*80)
-            logger.info("PIPELINE BUILD COMPLETE")
-            logger.info(self._format_stats())
-            logger.info("="*80)
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error building pipeline: {e}")
-            return False
-    
-    def _format_stats(self) -> str:
-        """Format processing statistics for display"""
-        stats = self.processing_stats
-        docs_per_sec = (
-            stats["total_documents"] / stats["total_time_seconds"]
-            if stats["total_time_seconds"] > 0
-            else 0
-        )
-        return f"""
-        Documents: {stats['total_documents']}
-        Chunks: {self.text_chunker.get_chunk_count()}
-        Vectors: {stats['total_vectors']}
-        Time: {stats['total_time_seconds']:.2f}s
-        Docs/sec: {docs_per_sec:.2f}
-        """
-    
-    def step_3_generate_embeddings(self) -> Dict[str, np.ndarray]:
-        """Step 3: Generate embeddings for all chunks."""
-        step_start = time.time()
-        logger.info("STEP 3: Generating Embeddings")
-        
-        if not self.all_chunks:
-            logger.warning("No chunks to embed")
-            return {}
-        
-        embeddings_dict = {}
-        total_chunks = sum(len(chunks) for chunks in self.all_chunks.values())
-        
-        # Collect all chunk texts
-        chunk_texts = []
-        chunk_ids = []
-        for doc_id, chunks in self.all_chunks.items():
-            for chunk in chunks:
-                chunk_texts.append(chunk.text)
-                chunk_ids.append(chunk.id)
-        
-        # Batch embed all texts
-        embedding_results = self.embedding_service.embed_batch(
-            chunk_texts,
-            batch_size=32
-        )
-        
-        # Store embeddings
-        for chunk_id, result in zip(chunk_ids, embedding_results):
-            embeddings_dict[chunk_id] = result.embedding
-        
-        step_time = time.time() - step_start
-        self.processing_stats["step_3_generate_embeddings"] = step_time
-        
-        logger.info(f"Step 3: Generated {total_chunks} embeddings in {step_time:.2f}s")
-        return embeddings_dict
-    
-    def step_4_build_vector_store(self, embeddings_dict: Dict[str, np.ndarray]) -> None:
-        """Step 4: Build vector store from embeddings."""
-        step_start = time.time()
-        logger.info("STEP 4: Building Vector Store")
-        
-        if not embeddings_dict:
-            logger.warning("No embeddings to store")
-            return
-        
-        # Prepare vectors and metadata
-        vectors = []
-        ids = []
-        metadata = []
-        
-        for doc_id, chunks in self.all_chunks.items():
-            for chunk in chunks:
-                if chunk.id in embeddings_dict:
-                    vectors.append(embeddings_dict[chunk.id])
-                    ids.append(chunk.id)
-                    
-                    # Store chunk metadata
-                    metadata.append({
-                        "document_id": doc_id,
-                        "chunk_id": chunk.id,
-                        "text": chunk.text,
-                        "token_count": chunk.metadata.token_count,
-                        "char_count": chunk.metadata.char_count,
-                        "chunk_index": chunk.metadata.chunk_index
-                    })
-        
-        # Add vectors to store
-        if vectors:
-            vectors_array = np.array(vectors, dtype=np.float32)
-            self.vector_store.add_vectors(
-                vectors=vectors_array,
-                ids=ids,
-                metadata=metadata
-            )
-        
-        # Save vector store
-        os.makedirs(self.vector_store_dir, exist_ok=True)
-        self.vector_store.save(self.vector_store_dir)
-        
-        step_time = time.time() - step_start
-        self.processing_stats["step_4_build_vector_store"] = step_time
-        self.processing_stats["total_vectors"] = len(vectors)
-        
-        logger.info(f"Step 4: Built vector store with {len(vectors)} vectors in {step_time:.2f}s")
-    
-    def run_complete_pipeline(self) -> bool:
-        """Execute complete RAG pipeline from start to finish."""
-        return self.build_pipeline_scalable()
-
 
 def load_chunks_metadata(chunks_dir: str) -> dict:
     """Load chunk metadata from files"""
@@ -1266,7 +1118,11 @@ Note: By default, --build clears existing databases for a fresh rebuild.
     )
     
     args = parser.parse_args()
-    
+
+    # Load heavy ML libraries now (after argument parsing, so --help is instant)
+    logger.info("Loading ML libraries...")
+    _load_heavy_imports()
+
     # Determine mode
     if args.build:
         # Clear databases by default (unless --incremental is specified)
@@ -1315,7 +1171,7 @@ Note: By default, --build clears existing databases for a fresh rebuild.
         if not args.parallel and not args.sequential:
             # Auto-detect based on document count
             doc_count = count_documents(args.documents_dir)
-            threshold = 10  # Switch to parallel for 20+ documents
+            threshold = 50  # Switch to parallel for 50+ documents (Windows process pool is fragile below this)
             use_parallel = doc_count >= threshold
             
             logger.info(f"Auto-detecting pipeline mode: {doc_count} documents found")
@@ -1336,24 +1192,38 @@ Note: By default, --build clears existing databases for a fresh rebuild.
             
             # Detect GPU configuration
             gpu_config = GPUConfig.detect()
-            
-            pipeline = ParallelRAGPipeline(
-                documents_dir=args.documents_dir,
-                vector_store_dir=args.vector_store_dir,
-                chunk_size=args.chunk_size,
-                chunk_overlap=args.chunk_overlap,
-                strategy=args.strategy,
-                encoding_name=args.encoding,
-                embedding_model=EMBEDDING_MODEL,
-                embedding_provider=EMBEDDING_PROVIDER,
-                num_loader_threads=args.loader_threads,
-                num_chunker_processes=args.chunker_processes,
-                gpu_config=gpu_config,
-                model_name=EMBEDDING_MODEL,
-                normalize_embeddings=EMBEDDING_NORMALIZE
-            )
-            success = pipeline.build()
-        else:
+
+            # Build provider-specific embedding kwargs (api keys, timeouts, etc.)
+            embedding_kwargs = _build_embedding_kwargs(gpu_config.device, EMBEDDING_MODEL)
+            # Remove keys that ParallelRAGPipeline passes explicitly to avoid duplicates
+            for _k in ("model_name", "normalize_embeddings"):
+                embedding_kwargs.pop(_k, None)
+
+            try:
+                pipeline = ParallelRAGPipeline(
+                    documents_dir=args.documents_dir,
+                    vector_store_dir=args.vector_store_dir,
+                    chunk_size=args.chunk_size,
+                    chunk_overlap=args.chunk_overlap,
+                    strategy=args.strategy,
+                    encoding_name=args.encoding,
+                    embedding_model=EMBEDDING_MODEL,
+                    embedding_provider=EMBEDDING_PROVIDER,
+                    num_loader_threads=args.loader_threads,
+                    num_chunker_processes=args.chunker_processes,
+                    gpu_config=gpu_config,
+                    model_name=EMBEDDING_MODEL,
+                    normalize_embeddings=EMBEDDING_NORMALIZE,
+                    **embedding_kwargs
+                )
+                success = pipeline.build()
+                if not success:
+                    raise RuntimeError("Parallel pipeline returned 0 chunks - falling back to sequential")
+            except Exception as _parallel_err:
+                logger.warning(f"Parallel pipeline failed ({_parallel_err}), falling back to sequential pipeline...")
+                use_parallel = False  # fall through to sequential below
+
+        if not use_parallel:
             # Use improved sequential pipeline with robust PDF/CSV and retry
             logger.info("Using IMPROVED SEQUENTIAL PIPELINE mode")
             logger.info("Features: parallel file loading, OCR detection, streaming CSV, embedding retry")
