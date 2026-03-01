@@ -14,7 +14,7 @@ FlagEmbedding  # BGE-M3 multi-representation (dense, sparse, ColBERT)
 # Document Parsing & Ingestion
 unstructured[pdf,docx,xlsx]
 PyMuPDF  # Fast PDF loading (10x faster than unstructured for PDFs)
-python-magic  # Cross-platform: uses OS-level libmagic (libmagic1 in Docker, install separately on Windows)
+python-magic-bin  # Bundles libmagic DLL for Windows; on Linux/Docker use python-magic + libmagic1 instead
 python-docx
 openpyxl
 pdf2image

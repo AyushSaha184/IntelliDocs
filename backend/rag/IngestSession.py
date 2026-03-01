@@ -501,51 +501,95 @@ def ingest_documents_session(
         store_path=str(vector_store_dir),
     )
 
-    # Process in batches
+    # Split into batches upfront
+    batches = [
+        all_chunks[i : i + EMBEDDING_BATCH_SIZE]
+        for i in range(0, len(all_chunks), EMBEDDING_BATCH_SIZE)
+    ]
+    num_batches = len(batches)
+
+    EMBED_WORKERS = 6           # concurrent API calls
+    PARALLEL_THRESHOLD = 5      # use concurrent path when more than this many batches
+
+    def _embed_one_batch(batch_chunks):
+        """Embed one batch; returns (batch_chunks, results). Runs in a worker thread."""
+        texts = [c.text for c in batch_chunks]
+        results = _embed_with_retry(embedding_service, texts)
+        return batch_chunks, results
+
+    def _write_to_faiss(batch_chunks, embedding_results):
+        """Write one completed batch to FAISS. Always called from the main thread."""
+        vectors = [r.embedding for r in embedding_results]
+        metadata_list = [
+            {
+                "document_id":   chunk.metadata.document_id,
+                "chunk_id":      chunk.id,
+                "text":          chunk.text,
+                "document_name": chunk.metadata.document_name,
+                "page_number":   chunk.metadata.page_number,
+                "source_url":    chunk.metadata.source_url,
+            }
+            for chunk in batch_chunks
+        ]
+        vector_store.add_vectors(
+            vectors=vectors,
+            metadata=metadata_list,
+            ids=[c.id for c in batch_chunks],
+        )
+
     total_embedded = 0
 
-    for batch_start in range(0, len(all_chunks), EMBEDDING_BATCH_SIZE):
-        batch = all_chunks[batch_start:batch_start + EMBEDDING_BATCH_SIZE]
-        texts = [c.text for c in batch]
-
-        try:
-            embedding_results = _embed_with_retry(embedding_service, texts)
-            
-            # Extract raw vectors from EmbeddingResult objects
-            # embed_batch() returns List[EmbeddingResult], FAISS needs raw arrays
-            vectors = [r.embedding for r in embedding_results]
-
-            # Add to vector store
-            metadata_list = []
-            for chunk in batch:
-                metadata_list.append({
-                    "document_id": chunk.metadata.document_id,
-                    "chunk_id": chunk.id,
-                    "text": chunk.text,
-                    "document_name": chunk.metadata.document_name,
-                    "page_number": chunk.metadata.page_number,
-                    "source_url": chunk.metadata.source_url,
-                })
-
-            vector_store.add_vectors(
-                vectors=vectors,
-                metadata=metadata_list,
-                ids=[c.id for c in batch],
-            )
-
-            total_embedded += len(batch)
-            logger.debug(
-                f"[{session_id[:8]}] Embedded batch {batch_start // EMBEDDING_BATCH_SIZE + 1}: "
-                f"{total_embedded}/{len(all_chunks)} chunks"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"[{session_id[:8]}] Embedding batch failed after retries: {e}\n"
-                f"{traceback.format_exc()}"
-            )
-            # Continue with next batch — partial ingestion is better than none
-            failed_files.append(("embedding_batch", str(e)))
+    if num_batches > PARALLEL_THRESHOLD:
+        # ── Concurrent path: multiple API calls in flight simultaneously ──────
+        workers = min(EMBED_WORKERS, num_batches)
+        logger.info(
+            f"[{session_id[:8]}] {num_batches} batches > threshold {PARALLEL_THRESHOLD} "
+            f"— embedding concurrently ({workers} workers)"
+        )
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="embedder"
+        ) as pool:
+            future_to_idx = {
+                pool.submit(_embed_one_batch, b): i
+                for i, b in enumerate(batches)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    batch_chunks, embedding_results = future.result()
+                    _write_to_faiss(batch_chunks, embedding_results)  # serial FAISS write
+                    total_embedded += len(batch_chunks)
+                    logger.debug(
+                        f"[{session_id[:8]}] Embedded batch {idx + 1}/{num_batches}: "
+                        f"{total_embedded}/{len(all_chunks)} chunks"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{session_id[:8]}] Embedding batch {idx + 1} failed: {e}\n"
+                        f"{traceback.format_exc()}"
+                    )
+                    failed_files.append(("embedding_batch", str(e)))
+    else:
+        # ── Sequential path: used for small chunk counts ───────────────────────
+        logger.info(
+            f"[{session_id[:8]}] {num_batches} batches <= threshold {PARALLEL_THRESHOLD} "
+            f"— embedding sequentially"
+        )
+        for idx, batch in enumerate(batches):
+            try:
+                batch_chunks, embedding_results = _embed_one_batch(batch)
+                _write_to_faiss(batch_chunks, embedding_results)
+                total_embedded += len(batch)
+                logger.debug(
+                    f"[{session_id[:8]}] Embedded batch {idx + 1}/{num_batches}: "
+                    f"{total_embedded}/{len(all_chunks)} chunks"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{session_id[:8]}] Embedding batch {idx + 1} failed: {e}\n"
+                    f"{traceback.format_exc()}"
+                )
+                failed_files.append(("embedding_batch", str(e)))
 
     step_times['embed'] = time.time() - step5_start
     logger.info(f"Added {total_embedded} vectors to store")

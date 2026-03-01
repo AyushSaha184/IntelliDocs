@@ -1066,7 +1066,7 @@ Examples:
 Performance:
   Sequential: ~8 docs/sec, 40% CPU, 40% GPU (best for <50 docs)
   Parallel:   ~60+ docs/sec, 95% CPU, 98% GPU (best for 50+ docs, 8x speedup!)
-  Auto-detect: Automatically chooses based on document count (threshold: 50)
+  Auto-detect: Automatically chooses based on document count (threshold: 11)
   
 Note: By default, --build clears existing databases for a fresh rebuild.
       Use --incremental to keep existing data and only add new documents.
@@ -1098,8 +1098,8 @@ Note: By default, --build clears existing databases for a fresh rebuild.
     parser.add_argument("--documents-dir", type=str, default="data/documents", help="Documents directory")
     parser.add_argument("--chunks-dir", type=str, default="data/chunks", help="Chunks directory")
     parser.add_argument("--vector-store-dir", type=str, default="data/vector_store", help="Vector store directory")
-    parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size (default: 512)")
-    parser.add_argument("--chunk-overlap", type=int, default=50, help="Chunk overlap (default: 50)")
+    parser.add_argument("--chunk-size", type=int, default=600, help="Chunk size (default: 600)")
+    parser.add_argument("--chunk-overlap", type=int, default=90, help="Chunk overlap (default: 90)")
     parser.add_argument("--strategy", type=str, default="fixed_size", 
                        choices=["fixed_size", "semantic", "sliding_window", "sentence", "paragraph"],
                        help="Chunking strategy")
@@ -1171,7 +1171,7 @@ Note: By default, --build clears existing databases for a fresh rebuild.
         if not args.parallel and not args.sequential:
             # Auto-detect based on document count
             doc_count = count_documents(args.documents_dir)
-            threshold = 50  # Switch to parallel for 50+ documents (Windows process pool is fragile below this)
+            threshold = 11  # Switch to parallel for 11+ documents
             use_parallel = doc_count >= threshold
             
             logger.info(f"Auto-detecting pipeline mode: {doc_count} documents found")

@@ -58,6 +58,28 @@ class QueryHandler:
         self.query_history: List[QueryResult] = []
         logger.info(f"QueryHandler initialized for session {session_id} with top_k={top_k}, LLM={'enabled' if llm else 'disabled'}")
     
+    # ------------------------------------------------------------------
+    # Metadata helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _source_display_name(chunk_meta: dict) -> str:
+        """Return a clean document name from chunk metadata."""
+        for key in ("document_name", "doc_name", "filename", "file_name", "source"):
+            val = chunk_meta.get(key)
+            if val:
+                return str(val)
+        return "Unknown"
+
+    @staticmethod
+    def _page_display(chunk_meta: dict):
+        """Return page number from chunk metadata, or None if unavailable."""
+        for key in ("page_number", "page", "page_num"):
+            val = chunk_meta.get(key)
+            if val is not None:
+                return val
+        return None
+
+    # ------------------------------------------------------------------
     def validate_query(self, query: str) -> Tuple[bool, str]:
         """Validate user query
         

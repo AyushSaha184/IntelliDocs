@@ -955,66 +955,37 @@ class TextChunker:
                 # AUTO-DETECT CSV STRUCTURE
                 columns_lower = [col.lower() for col in df.columns]
                 
-                # Detect Document columns
-                has_document = any(col in columns_lower for col in ['text', 'content', 'document'])
+                # Helper: check if any column name contains one of the keywords
+                def _any_col_contains(keywords):
+                    return any(kw in col for col in columns_lower for kw in keywords)
                 
-                # Detect Q&A columns
-                has_question = any(col in columns_lower for col in ['query', 'question', 'q'])
-                has_answer = any(col in columns_lower for col in ['answer', 'response', 'a'])
+                def _find_col_containing(keywords):
+                    """Return the first original column whose lowercase name contains a keyword."""
+                    for col in df.columns:
+                        cl = col.lower()
+                        for kw in keywords:
+                            if kw in cl:
+                                return col
+                    return None
+
+                # Detect Document columns (contains 'text', 'content', or 'document')
+                has_document = _any_col_contains(['text', 'content', 'document'])
+                
+                # Detect Q&A columns (contains 'query'/'question'/'q ' AND 'answer'/'response')
+                has_question = _any_col_contains(['query', 'question'])
+                has_answer = _any_col_contains(['answer', 'response', 'ground_truth'])
                 has_qa_structure = has_question and has_answer
                 
-                if has_document:
-                    # MODE 1: Document Mode - Chunk the specific text column(s) normally
-                    logger.info(f"Document CSV detected - extracting and chunking text column")
-                    
-                    # Find the primary text column
-                    text_col = None
-                    for col in df.columns:
-                        col_lower = col.lower()
-                        if col_lower in ['text', 'content', 'document']:
-                            text_col = col
-                            break
-                    
-                    # Identify other columns to treat as metadata (e.g., source_url, index)
-                    metadata_cols = [col for col in df.columns if col != text_col]
-                    
-                    # Use to_dict('records') - 5-10x faster than iterrows() which creates a Series per row
-                    for idx, row in enumerate(df.to_dict('records')):
-                        if pd.notna(row[text_col]) and str(row[text_col]).strip():
-                            row_text = str(row[text_col])
-                            
-                            # Build metadata for this row
-                            row_metadata = {'row_index': idx, 'csv_mode': 'document'}
-                            for m_col in metadata_cols:
-                                if pd.notna(row[m_col]):
-                                    val = str(row[m_col])
-                                    # Truncate massive metadata
-                                    row_metadata[m_col] = val if len(val) < 200 else val[:197] + "..."
-                            
-                            # Use the standard character-size chunker on the cell's text
-                            row_chunks = self._chunk_fixed_size(row_text, doc_id)
-                            
-                            for text_chunk, start_char, end_char in row_chunks:
-                                # Attach the row metadata to every sub-chunk
-                                chunk_meta = row_metadata.copy()
-                                chunks.append({
-                                    'text': text_chunk,
-                                    'start_char': start_char,
-                                    'end_char': end_char,
-                                    'metadata': chunk_meta
-                                })
-                                
-                    logger.debug(f"Document CSV created {len(chunks)} chunks from {len(df)} rows")
-                
-                elif has_qa_structure:
+                if has_qa_structure:
                     # MODE 2: Q&A Mode - One chunk per row for semantic retrieval
+                    # (checked first because Q&A is more specific than Document)
                     logger.info(f"Q&A CSV detected - using per-row chunking")
                     
                     # Find relevant columns
-                    query_col = next((col for col in df.columns if col.lower() in ['query', 'question', 'q']), None)
-                    answer_col = next((col for col in df.columns if col.lower() in ['answer', 'response', 'a']), None)
-                    context_col = next((col for col in df.columns if col.lower() in ['context', 'passage', 'text', 'content']), None)
-                    index_col = next((col for col in df.columns if col.lower() in ['document_index', 'doc_index', 'doc_id', 'document_id', 'id', 'index', 'idx', 'group', 'topic']), None)
+                    query_col = _find_col_containing(['query', 'question'])
+                    answer_col = _find_col_containing(['answer', 'response', 'ground_truth'])
+                    context_col = _find_col_containing(['context', 'passage', 'text', 'content'])
+                    index_col = _find_col_containing(['document_index', 'doc_index', 'doc_id', 'document_id', 'topic', 'group'])
                     
                     # Other metadata columns
                     known_cols = {query_col, answer_col, context_col, index_col}
@@ -1055,6 +1026,46 @@ class TextChunker:
                             })
                     
                     logger.debug(f"Q&A CSV created {len(chunks)} chunks")
+
+                elif has_document:
+                    # MODE 1: Document Mode - Chunk the specific text column(s) normally
+                    logger.info(f"Document CSV detected - extracting and chunking text column")
+                    
+                    # Find the primary text column
+                    text_col = _find_col_containing(['text', 'content', 'document'])
+                    if not text_col:
+                        text_col = df.columns[0]  # fallback to first column
+                    
+                    # Identify other columns to treat as metadata (e.g., source_url, index)
+                    metadata_cols = [col for col in df.columns if col != text_col]
+                    
+                    # Use to_dict('records') - 5-10x faster than iterrows() which creates a Series per row
+                    for idx, row in enumerate(df.to_dict('records')):
+                        if pd.notna(row[text_col]) and str(row[text_col]).strip():
+                            row_text = str(row[text_col])
+                            
+                            # Build metadata for this row
+                            row_metadata = {'row_index': idx, 'csv_mode': 'document'}
+                            for m_col in metadata_cols:
+                                if pd.notna(row[m_col]):
+                                    val = str(row[m_col])
+                                    # Truncate massive metadata
+                                    row_metadata[m_col] = val if len(val) < 200 else val[:197] + "..."
+                            
+                            # Use the standard character-size chunker on the cell's text
+                            row_chunks = self._chunk_fixed_size(row_text, doc_id)
+                            
+                            for text_chunk, start_char, end_char in row_chunks:
+                                # Attach the row metadata to every sub-chunk
+                                chunk_meta = row_metadata.copy()
+                                chunks.append({
+                                    'text': text_chunk,
+                                    'start_char': start_char,
+                                    'end_char': end_char,
+                                    'metadata': chunk_meta
+                                })
+                                
+                    logger.debug(f"Document CSV created {len(chunks)} chunks from {len(df)} rows")
                     
                 else:
                     # MODE 3: Bulk Mode - Large row groups for generic data
