@@ -50,7 +50,6 @@ render.yaml
 # Data and logs
 data/
 logs/
-output/
 
 # Jupyter
 .ipynb_checkpoints/
