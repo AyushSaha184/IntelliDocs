@@ -365,9 +365,13 @@ The system is built on modular, swappable components:
 - **Backend API** (`backend/`): FastAPI app with session lifecycle management, concurrency semaphore (max 5 concurrent ingest jobs), disk-space guard, and background cleanup.
 - **Frontend** (`frontend/`): React 19 + Vite SPA with multi-file upload, processing status polling, Markdown rendering, collapsible source citations, and auto-scroll.
 
-![Architecture Diagram:](Demo/Architecture_Diagram.png)
+### Architect Diagram
 
-![Data Flow Diagram:](Demo/DataFlow_Diagram.jpeg)
+<img src="./Demo/Architecture_Diagram.png" alt="Architecture Diagram" width="800" />
+
+### Data Flow Diagram
+
+<img src="./Demo/DataFlow_Diagram.jpeg" alt="Data Flow Diagram" width="800" />
 
 ## Requirements
 
