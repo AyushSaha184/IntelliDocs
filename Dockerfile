@@ -42,7 +42,7 @@ COPY . .
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/static
 
 # Create necessary directories
-RUN mkdir -p data/sessions data/documents data/chunks data/vector_store logs
+RUN mkdir -p data/sessions data/documents data/chunks data/vector_store data/cache data/.parse_cache logs
 
 # ── Environment variables for Render deployment ──
 ENV PYTHONUNBUFFERED=1

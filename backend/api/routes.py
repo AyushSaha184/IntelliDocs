@@ -383,3 +383,66 @@ def health(db: DBSession = Depends(get_db)):
         status_report["status"] = "degraded"
 
     return status_report
+
+
+# ── Phase 4: Human Review Endpoints ────────────────────────────────────
+
+@router.get("/review/pending")
+def get_pending_reviews(limit: int = 50):
+    """Get queries pending human review."""
+    from src.agents.HumanValidation import ReviewManager
+    manager = ReviewManager()
+    return {"reviews": manager.get_pending_reviews(limit=limit)}
+
+
+@router.post("/review/{review_id}/approve")
+def approve_review(review_id: str):
+    """Approve a pending review."""
+    from src.agents.HumanValidation import ReviewManager
+    manager = ReviewManager()
+    success = manager.approve_review(review_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Review not found or already processed")
+    return {"status": "approved", "review_id": review_id}
+
+
+class CorrectionRequest(BaseModel):
+    corrected_answer: str
+
+
+@router.post("/review/{review_id}/correct")
+def correct_review(review_id: str, body: CorrectionRequest):
+    """Correct a pending review with a human-provided answer."""
+    from src.agents.HumanValidation import ReviewManager
+    manager = ReviewManager()
+    success = manager.correct_review(review_id, body.corrected_answer)
+    if not success:
+        raise HTTPException(status_code=404, detail="Review not found or already processed")
+    return {"status": "corrected", "review_id": review_id}
+
+
+# ── Phase 5: Evaluation Endpoints ──────────────────────────────────────
+
+@router.get("/eval/summary")
+def get_eval_summary(last_n: Optional[int] = None):
+    """Get rolling metrics summary."""
+    from src.evaluation.Metrics import get_metrics_collector
+    collector = get_metrics_collector()
+    return collector.get_summary(last_n=last_n)
+
+
+# ── Phase 6: Stress Test Endpoint ──────────────────────────────────────
+
+@router.post("/stress-test")
+def run_stress_test(session_id: str):
+    """Run adversarial stress tests — gated behind ENABLE_STRESS_TEST env flag."""
+    import os
+    if not os.getenv("ENABLE_STRESS_TEST", "false").lower() == "true":
+        raise HTTPException(
+            status_code=403,
+            detail="Stress tests disabled. Set ENABLE_STRESS_TEST=true to enable."
+        )
+
+    from tests.stress.adversarial_tests import run_stress_tests
+    report = run_stress_tests(session_id)
+    return report

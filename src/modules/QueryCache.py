@@ -85,35 +85,50 @@ class RetrievalCache(BaseSQLiteCache):
         super().__init__(db_path, schema, "retrieval_cache")
         logger.info(f"RetrievalCache initialized at {db_path}")
 
-    def get_cache(self, session_id: str, query: str, top_k: int) -> Optional[Dict[str, Any]]:
+    def _make_key(self, session_id: str, query: str, top_k: int, retrieval_params: Optional[dict] = None) -> str:
+        """Create a strong composite cache key.
+
+        Includes: normalized_query + top_k + retrieval_params fingerprint.
+        This prevents false hits when hybrid weights, filters, or top_k change.
+        """
+        normalized_query = " ".join(query.lower().strip().split())  # normalize whitespace/case
+        params_str = json.dumps(retrieval_params or {}, sort_keys=True)
+        return self._hash_key(session_id, normalized_query, str(top_k), params_str)
+
+    def get_cache(
+        self, session_id: str, query: str, top_k: int, retrieval_params: Optional[dict] = None
+    ) -> Optional[Dict[str, Any]]:
         """Retrieve cached result if available."""
-        cache_key = self._hash_key(session_id, query, str(top_k))
-        
+        cache_key = self._make_key(session_id, query, top_k, retrieval_params)
+
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT result_json FROM retrieval_cache WHERE cache_key = ?", 
+                "SELECT result_json FROM retrieval_cache WHERE cache_key = ?",
                 (cache_key,)
             )
             row = cursor.fetchone()
-            
+
         if row:
             try:
                 logger.debug(f"Retrieval cache hit for query: '{query[:50]}...'")
                 return json.loads(row[0])
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode cached retrieval JSON for key {cache_key}")
-                
+
         return None
 
-    def set_cache(self, session_id: str, query: str, top_k: int, result_data: Dict[str, Any]):
+    def set_cache(
+        self, session_id: str, query: str, top_k: int, result_data: Dict[str, Any],
+        retrieval_params: Optional[dict] = None
+    ):
         """Save retrieval result to cache."""
-        cache_key = self._hash_key(session_id, query, str(top_k))
-        
+        cache_key = self._make_key(session_id, query, top_k, retrieval_params)
+
         with self._lock:
             self._conn.execute(
                 """
-                INSERT OR REPLACE INTO retrieval_cache 
-                (cache_key, session_id, query, top_k, result_json) 
+                INSERT OR REPLACE INTO retrieval_cache
+                (cache_key, session_id, query, top_k, result_json)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (cache_key, session_id, query, top_k, json.dumps(result_data))

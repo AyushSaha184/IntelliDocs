@@ -14,6 +14,7 @@ It does NOT affect the CLI --build pipeline.
 
 import os
 import time
+import threading
 import hashlib
 import traceback
 from pathlib import Path
@@ -52,6 +53,8 @@ from src.modules.Loader import (
     load_csv_full, 
     detect_csv_structure
 )
+from src.modules.DocumentParser import StructureAnalyzer
+from src.modules.MetadataEnricher import MetadataEnricher
 
 logger = get_logger(__name__)
 
@@ -431,7 +434,7 @@ def ingest_documents_session(
     step_times['load'] = time.time() - step2_start
     logger.info(f"Step 1: Streamed {len(loaded_docs)} documents in {step_times['load']:.2f}s")
 
-    # 3. Chunk documents
+    # 3. Chunk documents (with structure-aware analysis)
     step3_start = time.time()
     chunker = TextChunker(
         chunk_size=600,
@@ -446,6 +449,7 @@ def ingest_documents_session(
     for file_name, content, fhash in loaded_docs:
         try:
             doc_id = f"{session_id[:8]}_{fhash}"
+
             chunks = chunker.chunk_text(text=content, doc_id=doc_id, doc_name=file_name)
 
             # Save chunks to PostgreSQL for query-time retrieval
@@ -483,6 +487,14 @@ def ingest_documents_session(
     chunks_dir = Path(chunks_dir)
     chunks_dir.mkdir(parents=True, exist_ok=True)
     meta_path = chunks_dir / "chunks_metadata.json"
+    prev_path = chunks_dir / "chunks_metadata_prev.json"
+
+    # Archive the previous metadata before overwriting — one-step rollback if needed.
+    if meta_path.exists():
+        import shutil
+        shutil.copy2(str(meta_path), str(prev_path))
+        logger.info(f"[{session_id[:8]}] Archived previous chunks_metadata.json → chunks_metadata_prev.json")
+
     with open(meta_path, "w") as f:
         json.dump(chunks_metadata, f, indent=2)
 
@@ -613,6 +625,23 @@ def ingest_documents_session(
 
     elapsed = time.time() - start_time
     docs_per_sec = len(loaded_docs) / elapsed if elapsed > 0 else 0
+
+    # 7. Background enrichment (optional, non-blocking)
+    enable_enrichment = os.environ.get('ENABLE_CHUNK_ENRICHMENT', '').lower() in ('1', 'true', 'yes')
+    if enable_enrichment:
+        def _run_enrichment():
+            try:
+                enricher = MetadataEnricher()
+                enriched = enricher.enrich_pending_chunks(batch_size=10)
+                logger.info(f"[{session_id[:8]}] Background enrichment complete: {enriched} chunks enriched")
+            except Exception as e:
+                logger.error(f"[{session_id[:8]}] Background enrichment failed: {e}")
+
+        enrichment_thread = threading.Thread(target=_run_enrichment, daemon=True, name="enrichment-worker")
+        enrichment_thread.start()
+        logger.info(f"[{session_id[:8]}] Background enrichment started for {len(all_chunks)} pending chunks")
+    else:
+        logger.debug("Chunk enrichment disabled (set ENABLE_CHUNK_ENRICHMENT=1 to enable)")
 
     # Final summary banner
     logger.info("=" * 80)

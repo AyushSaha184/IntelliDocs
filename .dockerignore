@@ -9,6 +9,8 @@ data/sessions/*
 data/documents/*
 data/chunks/*
 data/vector_store/*
+data/cache/*
+data/.parse_cache/
 logs/*
 
 # Dev files
@@ -20,3 +22,6 @@ logs/*
 .vscode
 docker-compose.yml
 render.yaml
+venv/
+server.bat
+uninstall.txt

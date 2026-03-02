@@ -125,12 +125,12 @@ def cleanup_old_documents(days_old: int = 7):
 def cleanup_all_sessions():
     """Delete all sessions (force cleanup)."""
     print("\n🗑️  Cleaning up ALL sessions...")
-    
+
     db = get_session_local()()
     try:
         session_manager = get_session_manager()
         session_manager.cleanup_inactive_sessions(db)
-        
+
         # Also clean any orphaned session directories
         sessions_dir = DATA_DIR / "sessions"
         if sessions_dir.exists():
@@ -138,7 +138,7 @@ def cleanup_all_sessions():
                 if session_dir.is_dir():
                     shutil.rmtree(session_dir)
                     print(f"   Removed: {session_dir.name}")
-        
+
         print("✅ All sessions cleaned up")
     finally:
         db.close()

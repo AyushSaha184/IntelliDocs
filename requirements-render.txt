@@ -38,4 +38,6 @@ structlog
 
 # Utilities
 tqdm
+tiktoken
+psutil
 pyyaml

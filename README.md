@@ -1,6 +1,6 @@
 # IntelliDocs - Enterprise-Scale RAG Assistant
 
-IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system designed to intelligently process and query over local documents and knowledge bases. Built for speed and scalability, the system handles document ingestion, chunking, high-performance vector retrieval, and LLM-powered answer generation — all through a clean, web interface.
+IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system that turns local document repositories into interactive knowledge bases. It features a **Multi-Agent Orchestration Pipeline** that routes every query through a Planner → Router → Retriever → Synthesizer → Validator chain, a **Hybrid Search Pipeline** combining dense vector search, BM25 sparse retrieval, and Reciprocal Rank Fusion — with optional NVIDIA neural reranking — and a **Human-in-the-Loop Review System** that automatically escalates low-confidence or sensitive answers for human correction.
 
 **[🚀 Live Demo](https://enterprise-ai-assistant-rn3m.onrender.com)**
 
@@ -19,64 +19,130 @@ IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RA
   - [Environment Variables](#environment-variables)
   - [Command-line Flags](#command-line-flags)
 - [How IntelliDocs Works](#how-intellidocs-works)
+  - [Multi-Agent Orchestration](#multi-agent-orchestration)
+  - [Conditional Query Routing](#conditional-query-routing)
+  - [Human-in-the-Loop Review](#human-in-the-loop-review)
+  - [Hybrid Search Pipeline](#hybrid-search-pipeline)
   - [Parallel Processing Pipeline](#parallel-processing-pipeline)
   - [Extension-Aware Chunking](#extension-aware-chunking)
-  - [Embedding & Caching](#embedding--caching)
+  - [Three-Level Caching](#three-level-caching)
+  - [Metadata Enrichment](#metadata-enrichment)
   - [Session Isolation](#session-isolation)
 - [Architecture](#architecture)
+- [API Reference](#api-reference)
 - [Requirements](#requirements)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
 ## Project Overview
 
-IntelliDocs enables organizations to turn their local document repositories into interactive knowledge bases. It features a **Parallel Processing Pipeline** that optimizes CPU and GPU usage for large-scale document ingestion. By combining dense vector retrieval with optional NVIDIA reranking APIs, it achieves state-of-the-art accuracy in retrieval tasks. The system is built around session isolation, allowing multiple users to independently upload, process, and query their own documents securely.
+IntelliDocs enables organizations to turn local document repositories into interactive, queryable knowledge bases. At its core is a **Multi-Agent Orchestration Pipeline**: every query is classified by a `QueryPlanner`, routed by a `ConditionalRouter` to the appropriate execution path (direct LLM, single-agent, or multi-agent), processed by `RetrieverAgent` + `SynthesizerAgent`, validated for hallucination by `ValidatorAgent`, and optionally escalated to human review via the `Gatekeeper`.
+
+Retrieval uses a **Hybrid Search** core that fuses dense vector search (FAISS) with BM25 sparse keyword search via Reciprocal Rank Fusion, then optionally applies NVIDIA neural reranking. A **three-stage Parallel Processing Pipeline** distributes ingestion work across I/O threads, CPU processes, and concurrent embedding API calls. A **two-tier query cache** (retrieval + LLM response) eliminates redundant computation, and rolling **Evaluation Metrics** expose precision, recall, and latency per query.
 
 Specialized for:
 
 - Company policies (long, formal documents)
-
 - HR documents (rule-based and structured)
-
 - FAQs (short Q&A format)
-
 - Financial summaries (number-heavy content)
-
-- Product documentation (technical text and details about previous projects)
-
+- Product documentation (technical text)
 - CSV structured data (tabular format)
-
 - Website content (marketing and general information)
+- Source code repositories
 
 ## Features
 
-### Intelligent Ingestion
+### 🤖 Multi-Agent Orchestration (New)
 
-- **Multi-Format Support**: Ingest PDFs, Word documents, Excel sheets, CSVs, Markdown, JSON, HTML, source code files, and Jupyter notebooks.
-- **Parallel Pipeline**: Asynchronous document loading (threads), multi-process chunking, and batched GPU/API embedding for more than 10 Documents.
-- **Auto-Tuning**: Automatically detects document count and system resources to choose the optimal pipeline (sequential vs. parallel).
+- **QueryPlanner**: Uses the LLM to classify every query into one of six types — `trivial`, `factual`, `summarization`, `analytical`, `comparative`, `multi_hop` — and decomposes multi-hop queries into sub-queries. Falls back to a heuristic classifier when the LLM is unavailable.
+- **ConditionalRouter**: Routes the plan to the fastest viable execution path: `DIRECT_LLM` (trivial — no retrieval), `SINGLE_AGENT` (factual/summarization), `MULTI_AGENT` (analytical/comparative/multi-hop), or `HUMAN_REVIEW` (low confidence).
+- **RetrieverAgent**: Wraps the hybrid RAG retriever for use inside the agent pipeline; checks the retrieval cache before calling FAISS+BM25.
+- **SynthesizerAgent**: Builds the full prompt (system prompt + compressed context + query) and calls the LLM to generate an answer.
+- **ValidatorAgent**: Uses a secondary LLM call to verify that the generated answer is grounded in the retrieved context — catches the hallucination failure mode where retrieval quality is low but the LLM still sounds confident.
+- **Context Compression**: Two-stage compression keeps prompts within `TOKEN_BUDGET`: (1) cheap truncation of least-relevant chunks; (2) LLM summarization only when still >20% over budget after truncation.
+- **Max Agent Steps**: Orchestrator enforces a 5-step cap and a configurable timeout to prevent runaway pipelines.
+- **Human-Approved Answer Cache**: Corrected answers stored by human reviewers are first-checked on every subsequent identical query (with a freshness guard per session).
 
-### Extension-Aware Chunking
+### 🔀 Conditional Query Routing
+
+| Query Type | Route | Behaviour |
+|---|---|---|
+| `trivial` (greetings, simple yes/no) | `DIRECT_LLM` | LLM called directly — zero retrieval overhead |
+| `factual` (simple, single-hop) | `SINGLE_AGENT` | One hybrid retrieval → synthesize → validate |
+| `summarization` | `SINGLE_AGENT` | Same path, `top_k` raised to 10 for broader coverage |
+| `analytical` / `comparative` | `MULTI_AGENT` | Full pipeline: retrieve → synthesize → validate |
+| `multi_hop` | `MULTI_AGENT` | Parallel per-sub-query retrieval (fan-out capped at `k=3`) |
+| Avg retrieval score < 0.4 | `HUMAN_REVIEW` | Answer escalated to the human review queue |
+
+### 👤 Human-in-the-Loop Review
+
+- **Gatekeeper**: Checks three conditions after retrieval — sensitivity (password/salary/key patterns), groundedness (from `ValidatorAgent`), and confidence (avg retrieval score vs. threshold). Escalates when any check fails.
+- **Sensitivity Filter**: Pre-compiled regex patterns detect prompt-injection and PII-adjacent queries at near-zero cost.
+- **Review Queue**: Pending reviews stored in SQLite with full query, answer, confidence, and reason. Exposed via `GET /reviews/pending`.
+- **Approve or Correct**: Human reviewers can approve the AI answer (`POST /reviews/{id}/approve`) or supply a corrected answer (`POST /reviews/{id}/correct`). Corrected answers are cached and replayed on future identical queries.
+- **Audit Log**: Every escalation is written to an `audit_log` table for compliance traceability.
+
+### 🔍 Hybrid Search
+
+- **Dense + Sparse Fusion**: Combines FAISS vector search (semantic understanding) with BM25 keyword search (exact term matching) for higher recall across diverse query types.
+- **Reciprocal Rank Fusion (RRF)**: Merges dense and sparse rankings using the industry-standard RRF formula (`1/(k+rank)`), producing a unified, calibrated score without needing a trained fusion head.
+- **BM25 Persistent Index**: The BM25 index is built during ingestion and saved as `bm25_index.pkl` alongside the FAISS index — zero rebuild cost on restart.
+- **Graceful Degradation**: If BM25 is unavailable or the index is empty, the pipeline falls back to dense-only search transparently.
+
+### 🎯 NVIDIA Neural Reranking
+
+- **nv-rerank-qa-mistral-4b:1**: Optional precision reranking via the NVIDIA Reranking API after hybrid candidate retrieval.
+- **Adaptive Threshold**: Reranking only activates when the candidate set exceeds `MIN_CHUNKS_TO_RERANK` (default: 8), avoiding unnecessary API calls on small result sets.
+- **Connection Reuse**: Uses a persistent `requests.Session` to reduce per-request TLS/TCP overhead.
+- **Configurable**: Enable/disable via `USE_RERANKER` env var.
+
+### ⚡ Parallel Processing Pipeline
+
+- **Three-Stage Streaming**: Document loading (ThreadPoolExecutor) → chunking (ProcessPoolExecutor) → embedding (concurrent API workers), connected by bounded queues for backpressure.
+- **Auto-Tuning**: Automatically selects sequential vs. parallel mode based on document count (threshold: 11 documents). Automatically detects GPU VRAM and tunes `batch_size` and `pre_batch_size`.
+- **Concurrent Embedding**: Up to 6 embedding API calls in-flight simultaneously (I/O-bound optimization); FAISS writes are serialized in the main thread — no locking needed.
+- **OOM Recovery**: Automatically halves batch size and retries up to 3 times on GPU out-of-memory errors.
+- **Incremental Ingestion**: `--incremental` flag preserves existing vector store and appends only new documents.
+
+### 📄 Extension-Aware Chunking
 
 - **Smart Routing**: Each file type uses the most appropriate chunking strategy automatically.
-- **Strategy Library**: Semantic, header-based (Markdown), DOM-aware (HTML), code-structure (Python/JS/Java), row-group (CSV/Excel), key-path (JSON/YAML), and cell-aware (Jupyter) chunkers.
-- **Q&A CSV Detection**: Automatically detects query/answer column structure and applies per-row chunking for semantic retrieval.
-- **Table-Aware Chunking**: Detects and preserves tables as atomic units within text documents.
+- **8 Strategies**: Semantic, header-based (Markdown), DOM-aware (HTML), code-structure (Python/JS/Java/Go/Rust/C/C#), row-group (CSV/Excel), key-path (JSON/YAML), cell-aware (Jupyter notebooks), and fixed-size fallback.
+- **Q&A CSV Detection**: Automatically detects query/answer column structures and applies per-row chunking for optimal semantic retrieval.
+- **Table-Aware**: Detects and preserves tables as atomic units within text documents.
 
-### Advanced Retrieval
+### 💾 Two-Tier Query Cache
 
-- **Dense Vector Search**: High-performance similarity search using FAISS (Flat, IVF, and HNSW indices supported).
-- **NVIDIA Reranking**: Optional integration with `nv-rerank-qa-mistral-4b:1` for precision reranking after initial retrieval.
-- **SQLite Embedding Cache**: Avoids redundant API calls by persisting embeddings on disk, saving cost and time.
+| Level | What's Cached | Key |
+|---|---|---|
+| **Retrieval Cache** | Retrieved chunk sets per query | session + normalized query + top_k |
+| **LLM Cache** | LLM responses per query | session + query hash |
 
-### Enterprise Ready
+- All caches are **session-scoped** — no cross-user pollution.
+- Background `CleanupScheduler` evicts stale cache entries on a 10-minute cycle.
 
-- **Session Isolation**: Each user session has its own document store, vector index, and chunk metadata — no cross-user data leakage.
-- **FastAPI Backend**: Robust, session-aware REST API with background task management and concurrency control (max 5 concurrent processing sessions).
-- **Auto Cleanup**: Background scheduler deletes sessions after 2 hours from creation or 1 hour of inactivity.
-- **Disk Safety**: Upload endpoint checks available disk space before accepting files and enforces a 20MB per-file limit.
-- **Modern UI**: Clean, responsive web interface built with React 19, Vite, and Tailwind CSS v4.
-- **Two-Level Response Cache**: SQLite-backed retrieval cache and LLM cache to avoid redundant computation within a session.
+### 🧠 Metadata Enrichment
+
+- **Background Worker**: Runs asynchronously after ingestion completes — never blocks the user session.
+- **True LLM Batching**: Multiple chunks are sent in a single LLM call for summary generation, reducing API round trips.
+- **Three Enrichment Types**: Per-chunk LLM summaries (2-3 sentences), TF-scored keyword extraction (no LLM needed), and hypothetical question generation (HyDE-style for improved retrieval).
+- **Resumable**: Only processes chunks with `enrichment_status='pending'` — safe to restart mid-run.
+- **Optional**: Controlled by `ENABLE_CHUNK_ENRICHMENT=1` environment variable.
+
+### 📊 Evaluation & Observability
+
+- **Per-Query Metrics**: Retrieval precision/recall, answer relevance score, latency (retrieval, LLM, total), and route taken are recorded after every query.
+- **Rolling Summary**: `GET /eval/summary` returns a configurable window of aggregated metrics for monitoring dashboards.
+- **Structured Logging**: Per-module rotating log files with console + file handlers via `src/utils/Logger.py`.
+
+### 🏢 Enterprise Ready
+
+- **Session Isolation**: Each user upload creates its own document store, FAISS index, BM25 index, and chunk metadata directory — zero cross-user data leakage.
+- **FastAPI Backend**: Robust, session-aware REST API with concurrency control (max 5 concurrent ingest jobs), disk-space guard (20MB per file), and background lifecycle management.
+- **Auto Cleanup**: `CleanupScheduler` runs every 10 minutes — deletes sessions older than 2 hours or idle for 1+ hours.
+- **Modern UI**: React 19 + Vite frontend with multi-file upload, processing status polling, Markdown rendering, collapsible source citations, and auto-scroll.
+- **Document Parse Cache**: `data/.parse_cache/` stores intermediate parse results to avoid re-parsing unchanged files.
 
 ## Project Structure
 
@@ -84,55 +150,75 @@ Specialized for:
 .
 ├── backend/
 │   ├── api/
-│   │   └── routes.py           # FastAPI route definitions (upload, ask, status, process, health)
+│   │   └── routes.py               # FastAPI routes (upload, ask, status, process, health)
 │   ├── database/
-│   │   └── models.py           # SQLAlchemy session model; PostgreSQL with SQLite fallback
+│   │   └── models.py               # SQLAlchemy session model; PostgreSQL with SQLite fallback
 │   ├── rag/
-│   │   ├── IngestSession.py    # Session-aware ingestion pipeline (parallel file loading + retry)
-│   │   ├── Embedder.py         # Embedding service wrapper
-│   │   └── retriever.py        # Retriever wrapper
+│   │   ├── IngestSession.py        # Session ingestion: parallel load + BM25 build + FAISS store
+│   │   ├── Embedder.py             # Embedding service wrapper
+│   │   └── retriever.py            # Retriever wrapper
 │   ├── services/
-│   │   ├── session_service.py  # Session creation, isolation, and lifecycle management
+│   │   ├── session_service.py      # Session creation, isolation, and lifecycle management
 │   │   ├── rag_service_session.py  # Session-scoped QueryHandler with shared LLM/reranker singletons
-│   │   ├── cleanup_scheduler.py    # Background session and cache expiry scheduler
+│   │   ├── cleanup_scheduler.py    # Background session + cache expiry scheduler
 │   │   └── cleanup_storage.py      # Manual storage cleanup CLI utility
-│   └── main.py                 # FastAPI app entrypoint (lifespan, CORS, static serving)
+│   └── main.py                     # FastAPI app entrypoint (lifespan, CORS, static serving)
 ├── config/
-│   └── config.py               # Central environment-aware configuration
+│   └── config.py                   # Central environment-aware configuration
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── ChatInput.jsx       # Message input with multi-file upload and process trigger
-│   │   │   ├── ChatMessage.jsx     # Message bubble with markdown, source citations, copy button
-│   │   │   ├── FileUpload.jsx      # File picker with validation (type + size)
-│   │   │   ├── FilePreviews.jsx    # Pre-upload file preview and batch upload UI
-│   │   │   └── UploadedFiles.jsx   # Post-upload file status with collapsible panel
+│   │   │   ├── ChatInput.jsx        # Message input with multi-file upload and process trigger
+│   │   │   ├── ChatMessage.jsx      # Message bubble with Markdown, source citations, copy button
+│   │   │   ├── FileUpload.jsx       # File picker with type + size validation
+│   │   │   ├── FilePreviews.jsx     # Pre-upload file preview and batch upload UI
+│   │   │   └── UploadedFiles.jsx    # Post-upload file status with collapsible panel
 │   │   ├── services/
-│   │   │   └── api.js              # API client (upload, process, status, ask, health)
-│   │   └── App.jsx                 # Main app with session state and polling logic
+│   │   │   └── api.js               # API client (upload, process, status, ask, health)
+│   │   └── App.jsx                  # Main app with session state and polling logic
 │   └── index.html
 ├── src/
+│   ├── agents/
+│   │   ├── Orchestrator.py         # AgentOrchestrator: runs planner → router → retrieval → synthesis → validation
+│   │   ├── Planner.py              # QueryPlanner: LLM-based query classification + sub-query decomposition
+│   │   ├── Router.py               # ConditionalRouter: routes to DIRECT_LLM / SINGLE_AGENT / MULTI_AGENT / HUMAN_REVIEW
+│   │   ├── RetrieverAgent.py       # Agent wrapper around RAGRetriever
+│   │   ├── SynthesizerAgent.py     # Context-to-answer generation agent
+│   │   ├── ValidatorAgent.py       # Groundedness / hallucination checker
+│   │   ├── HumanValidation.py      # Gatekeeper + ReviewManager (escalation, approval, correction)
+│   │   ├── Tools.py                # Agent tool definitions (search, summarise, etc.)
+│   │   └── BaseAgent.py            # Abstract base with AgentTask / AgentResult dataclasses
+│   ├── evaluation/
+│   │   └── Evaluator.py            # Per-query metrics (precision, recall, latency, route)
 │   ├── modules/
-│   │   ├── Loader.py           # Multi-format document loader with PDF streaming and CSV detection
-│   │   ├── Chunking.py         # Extension-aware text chunker with all strategies and PostgreSQL persistence
-│   │   ├── Embeddings.py       # NVIDIA BGE-M3 embedding service with disk cache
-│   │   ├── VectorStore.py      # FAISS vector store with atomic save and cached reverse mapping
-│   │   ├── Retriever.py        # Dense retriever with optional NVIDIA reranker
-│   │   ├── QueryGeneration.py  # QueryHandler: retrieval + LLM response + two-level cache
-│   │   ├── LLM.py              # LLM providers (OpenRouter, Gemini, HuggingFace)
-│   │   ├── ParallelPipeline.py # Three-stage streaming pipeline (threads → processes → GPU)
-│   │   └── QueryCache.py       # SQLite-backed retrieval and LLM response caches
+│   │   ├── Loader.py               # Multi-format document loader (PDF streaming, OCR fallback, CSV)
+│   │   ├── Chunking.py             # Extension-aware chunker (8 strategies)
+│   │   ├── DocumentParser.py       # Structure analyzer with parse caching
+│   │   ├── Embeddings.py           # Embedding service (NVIDIA/Gemini/HF/local) + retry
+│   │   ├── VectorStore.py          # FAISS vector store (Flat/IVF/HNSW, atomic save, O(1) lookup)
+│   │   ├── Retriever.py            # Hybrid retriever: dense + BM25 + RRF + NVIDIA reranking
+│   │   ├── QueryGeneration.py      # QueryHandler: retrieval → LLM → cache (legacy / global index)
+│   │   ├── QueryCache.py           # Session-scoped retrieval + LLM response caches
+│   │   ├── MetadataEnricher.py     # Async background enricher (summaries, keywords, HyDE questions)
+│   │   ├── LLM.py                  # Provider-agnostic LLM layer (Gemini, HuggingFace, NVIDIA, LM Studio)
+│   │   └── ParallelPipeline.py     # Three-stage streaming pipeline (threads → processes → API workers)
 │   └── utils/
-│       └── Logger.py           # Structlog-based logger with JSON file + console output
-├── data/                       # Runtime data (vector indices, session dirs, cache) — gitignored
-├── logs/                       # Application logs — gitignored
-├── main.py                     # Unified CLI entrypoint (build / query / api / test modes)
-├── requirements.txt            # Full dependency list
-├── requirements-render.txt     # Slim dependency list for Render.com (no local ML models)
-├── Dockerfile                  # Multi-stage build (Node frontend → Python backend)
-├── docker-compose.yml          # PostgreSQL + app container orchestration
-├── server.bat                  # Local Windows startup script (PostgreSQL + backend + frontend)
-└── .env.example                # Environment variable template
+│       ├── Logger.py               # Rotating logger with console + file handlers
+│       └── llm_provider.py         # Shared LLM/reranker singleton factory
+├── data/                           # Runtime data (gitignored)
+│   ├── cache/                      # SQLite caches: embedding, retrieval, LLM
+│   ├── .parse_cache/               # Document parse cache (avoids re-parsing unchanged files)
+│   ├── vector_store/               # Global FAISS index + BM25 index (bm25_index.pkl)
+│   ├── documents/                  # Ingested documents (global build)
+│   ├── chunks/                     # Chunk metadata JSON (global build)
+│   └── sessions/                   # Per-session isolated stores
+├── logs/                           # Application logs — gitignored
+├── main.py                         # Unified CLI entrypoint (build / query / api / test modes)
+├── requirements.txt                # Full dev dependencies (includes python-magic-bin for Windows)
+├── requirements-render.txt         # Slim Linux/Docker dependencies (python-magic + libmagic1)
+├── Dockerfile                      # Multi-stage build (Node frontend → Python backend)
+├── docker-compose.yml              # PostgreSQL + app container orchestration
+└── .env.example                    # Environment variable template
 ```
 
 ## Installation
@@ -140,10 +226,10 @@ Specialized for:
 ### Prerequisites
 
 - Python 3.10+
-- Node.js 18+
+- Node.js 20+
 - PostgreSQL (or Docker)
-- NVIDIA API Key
-- OpenRouter API Key
+- NVIDIA API Key (embeddings + reranking)
+- OpenRouter API KEY (LLM responses)
 
 ### Steps
 
@@ -165,7 +251,6 @@ Specialized for:
    ```
 
 3. **Database Setup**:
-   Create a PostgreSQL database:
 
    ```sql
    CREATE DATABASE rag_db;
@@ -194,23 +279,23 @@ Specialized for:
 
 ### Build Command
 
-Build or update the vector store by ingesting documents from `data/documents/`. Automatically selects sequential or parallel mode based on document count (threshold: 11 documents).
+Ingest documents from `data/documents/` into the vector store. Automatically selects sequential or parallel mode based on document count (threshold: 11).
 
 ```bash
 python main.py --build
 ```
 
-Force a specific pipeline:
+Force a specific pipeline or mode:
 
 ```bash
-python main.py --build --parallel     # Force parallel (recommended for 50+ docs)
-python main.py --build --sequential   # Force sequential
-python main.py --build --incremental  # Add new documents without clearing existing data
+python main.py --build --parallel       # Force parallel (recommended for 50+ docs)
+python main.py --build --sequential     # Force sequential
+python main.py --build --incremental    # Add new documents without clearing existing data
 ```
 
 ### Query Command
 
-Start an interactive CLI chat session against the built vector store.
+Start an interactive CLI chat session with hybrid search against the built vector store.
 
 ```bash
 python main.py --query
@@ -218,17 +303,17 @@ python main.py --query
 
 ### API Command
 
-Start the production FastAPI server (serves both the REST API and the React frontend).
+Start the FastAPI server (serves REST API + React frontend).
 
 ```bash
 python main.py --api
 ```
 
-Access the UI at `http://localhost:8000` and API docs at `http://localhost:8000/docs`.
+Access at `http://localhost:8000` — API docs at `http://localhost:8000/docs`.
 
 ### Test Command
 
-Run a single test query against the built vector store and print results to the console.
+Run a single test query and print ranked sources + LLM response.
 
 ```bash
 python main.py --test-query "What are the capabilities of this system?"
@@ -238,34 +323,38 @@ python main.py --test-query "What are the capabilities of this system?"
 
 ### Environment Variables
 
-Key variables for your `.env` file:
-
 ```bash
-# Embedding Configuration
+# ── Embeddings ─────────────────────────────────────────────────────────
 NVIDIA_API_KEY=your_nvidia_api_key_here
-EMBEDDING_PROVIDER=nvidia               # nvidia | gemini | hf-inference | lm-studio | local
+EMBEDDING_PROVIDER=nvidia            # nvidia | gemini | hf-inference | lm-studio | local
 EMBEDDING_MODEL=baai/bge-m3
 EMBEDDING_NORMALIZE=true
 EMBEDDING_TIMEOUT=120.0
 EMBEDDING_MAX_RETRIES=3
+EMBEDDING_CACHE_DIR=data/cache       # SQLite embedding cache location
 
-# Retrieval Configuration
-RETRIEVAL_MODE=dense                    # dense | hybrid
+# ── Retrieval ──────────────────────────────────────────────────────────
+RETRIEVAL_MODE=hybrid                # hybrid | dense
+# hybrid: BM25 + dense + RRF fusion (recommended)
+# dense:  FAISS-only (legacy mode)
 
-# Reranker Configuration
+# ── Reranker ───────────────────────────────────────────────────────────
 USE_RERANKER=true
 RERANKER_MODEL=nv-rerank-qa-mistral-4b:1
-MIN_CHUNKS_TO_RERANK=8
+MIN_CHUNKS_TO_RERANK=8              # Only rerank when candidates exceed this
 TOP_K_AFTER_RERANK=5
 
-# LLM Configuration
-LLM_PROVIDER=openrouter                 # openrouter | gemini | hf-inference
+# ── LLM ────────────────────────────────────────────────────────────────
+LLM_PROVIDER=openrouter              # openrouter | gemini | hf-inference
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 LLM_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=1000
 
-# PostgreSQL Configuration
+# ── Metadata Enrichment ────────────────────────────────────────────────
+ENABLE_CHUNK_ENRICHMENT=0            # 1 to enable async post-ingest enrichment
+
+# ── Database ───────────────────────────────────────────────────────────
 DATABASE_URL=postgresql://user:password@localhost:5432/rag_db
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
@@ -276,110 +365,202 @@ POSTGRES_PASSWORD=your_db_password
 
 ### Command-line Flags
 
-`main.py` supports runtime overrides:
-
-- `--device`: `cpu` or `cuda` for local embeddings.
-- `--top-k`: Number of chunks to retrieve per query (default: 5).
-- `--chunk-size`: Target token size for text chunks (default: 600).
+- `--device`: `cpu` or `cuda` for local embedding models.
+- `--top-k`: Chunks to retrieve per query (default: 5).
+- `--chunk-size`: Target token size per chunk (default: 600).
 - `--chunk-overlap`: Token overlap between chunks (default: 90).
 - `--strategy`: Chunking strategy (`fixed_size`, `semantic`, `sliding_window`, `sentence`, `paragraph`).
 - `--vector-store-type`: FAISS index type (`flat`, `ivf`, `hnsw`).
-- `--api-port`: Port for the API server (default: 8000).
-- `--loader-threads`: Number of loader threads in parallel mode (default: 8).
-- `--incremental`: Keep existing database; only add new documents.
+- `--api-port`: API server port (default: 8000).
+- `--loader-threads`: Loader threads in parallel mode (default: 8).
+- `--incremental`: Keep existing data; only add new documents.
 
-### Docker Compose (Recommended)
-
-The `docker-compose.yml` orchestrates a PostgreSQL database and the app container with persistent storage volumes.
+### Docker Compose
 
 ```bash
 docker-compose up --build
 ```
 
-Set `OPENROUTER_API_KEY` in `.env` before running. The app will be available at `http://localhost:8000`.
+Set API keys in `.env` before running. App available at `http://localhost:8000`.
 
 ### Render.com
 
-An example blueprint is provided in `render.example.yaml`. Key settings for Render deployment:
+Deploy via `render.yaml` (blueprint auto-configures DB, env vars, and disk):
 
-- Set `EMBEDDING_PROVIDER=nvidia` to use the NVIDIA embedding API (no local model required, fits within Render free-tier RAM limits).
-- Use `requirements-render.txt` (slim build, no PyTorch).
-- Provision a Render PostgreSQL database and attach `DATABASE_URL` automatically.
-- Mount a persistent disk at `/app/data` to preserve session data across restarts.
+- Uses `requirements-render.txt` (no PyTorch — fits Render free-tier RAM).
+- `EMBEDDING_PROVIDER=nvidia` — no local model required.
+- Persistent disk mounted at `/app/data` (7 GB) — preserves vector store, BM25 index, and SQLite caches across restarts.
+- Set `ENABLE_CHUNK_ENRICHMENT=1` to enable background metadata enrichment (uses additional LLM tokens).
 
 ## How IntelliDocs Works
 
+### Multi-Agent Orchestration
+
+Every `POST /ask` request passes through `AgentOrchestrator.run()`, which coordinates a chain of specialized agents:
+
+![Multi-Agent Orchestration](Demo/MultiAgent.png)
+
+**Guardrails:**
+
+- Maximum 5 agent steps and configurable timeout per request.
+- Multi-hop fan-out capped at `k=3` per sub-query to control latency.
+- Context compression: cheap truncation first, costly LLM summarization only when still >20% over budget.
+
+### Conditional Query Routing
+
+`QueryPlanner` uses the LLM to classify the query (with a heuristic fallback when the LLM is unavailable). `ConditionalRouter` maps the classification to an execution path:
+
+| Query Type | Route | Description |
+|---|---|---|
+| `trivial` | `DIRECT_LLM` | Greetings, simple yes/no — zero retrieval overhead |
+| `factual` | `SINGLE_AGENT` | One hybrid retrieval → synthesize → validate |
+| `summarization` | `SINGLE_AGENT` | Same path, `top_k` raised to 10 for broader coverage |
+| `analytical` | `MULTI_AGENT` | Full pipeline with context aggregation |
+| `comparative` | `MULTI_AGENT` | Multi-source retrieval + comparative synthesis |
+| `multi_hop` | `MULTI_AGENT` | Parallel per-sub-query retrieval, fan-out capped at k=3 |
+| avg score < 0.4 | `HUMAN_REVIEW` | Escalated to the pending review queue |
+
+### Human-in-the-Loop Review
+
+`Gatekeeper.should_escalate()` checks three conditions after retrieval:
+
+1. **Sensitivity**: Pre-compiled regex detects password, salary, API-key, or prompt-injection patterns.
+2. **Groundedness**: `ValidatorAgent` reports whether the answer is supported by the context.
+3. **Confidence**: Average retrieval score below 0.4.
+
+If any condition is met the answer is stored in the review queue. Human reviewers use the frontend `ReviewPanel` (or raw API calls) to approve or correct. Corrected answers are persisted and returned on future identical queries via `_lookup_approved_answer()` with a session freshness guard.
+
+### Hybrid Search Pipeline
+
+IntelliDocs retrieves documents through a four-stage hybrid pipeline:
+
+1. **Dense Retrieval**: Query is embedded and searched via FAISS (up to `k×3` candidates).
+2. **Sparse Retrieval**: Query is tokenized (stopword-filtered) and scored against the pre-built BM25 index.
+3. **RRF Fusion**: Each candidate's rank from dense and sparse lists is combined: `score += 1/(60 + rank)`. Higher combined score = better match.
+4. **Reranking**: If the candidate count exceeds `MIN_CHUNKS_TO_RERANK`, results are reranked by NVIDIA's `nv-rerank-qa-mistral-4b:1` model and trimmed to `top_k`.
+
 ### Parallel Processing Pipeline
 
-IntelliDocs uses a three-stage concurrent architecture to handle large datasets:
+Three concurrent stages minimize end-to-end ingestion time:
 
-1. **Loading (I/O Bound)**: A `ThreadPoolExecutor` loads files from disk in parallel, with format-specific handlers for PDF (PyMuPDF with OCR fallback), DOCX (python-docx with unstructured fallback), Excel, CSV, and plain text.
-2. **Chunking (CPU Bound)**: A `ProcessPoolExecutor` bypasses the GIL to chunk documents in parallel using extension-aware routing.
-3. **Embedding (GPU/API Bound)**: A concurrent `ThreadPoolExecutor` runs multiple embedding API calls in flight simultaneously (default: 6 workers), writing results to FAISS as each batch completes. For small datasets (≤5 batches), a sequential path is used to reduce overhead.
+1. **Loading (I/O Bound)**: `ThreadPoolExecutor` loads files in parallel with format-specific handlers — PyMuPDF for PDFs (OCR fallback via Tesseract), python-docx for Word, openpyxl for Excel, and UTF-8 text for code/markup files.
+2. **Chunking (CPU Bound)**: `ProcessPoolExecutor` bypasses the GIL to chunk documents in parallel. Child processes re-import `TextChunker` fresh to avoid stale bytecode.
+3. **Embedding (API Bound)**: Up to 6 `ThreadPoolExecutor` workers send concurrent API calls. Results are collected and batch-written to FAISS. The BM25 index is built from all chunk texts after embedding completes.
 
-The auto-detection threshold (11 documents) switches the build from sequential to parallel mode. For incremental builds (`--incremental`), existing data is preserved and only new documents are processed.
+Auto-detection switches to the parallel pipeline at 11+ documents. Small datasets use the sequential path to avoid process-spawn overhead.
 
 ### Extension-Aware Chunking
 
-The `TextChunker` routes each file to a dedicated chunking strategy based on file extension:
+`TextChunker` routes each file to the optimal strategy based on extension:
 
 | Extension | Strategy | Description |
 |---|---|---|
-| `.pdf`, `.docx`, `.txt` | Semantic | Sentence-boundary splits with 15% overlap; table blocks kept atomic |
-| `.md` | Header-based | Respects heading hierarchy; falls back to fixed-size for oversized sections |
+| `.pdf`, `.docx`, `.txt` | Semantic | Sentence-boundary splits, 15% overlap, tables kept atomic |
+| `.md` | Header-based | Respects heading hierarchy; fixed-size fallback for oversized sections |
 | `.html`, `.htm` | DOM-aware | BeautifulSoup extraction with header hierarchy tracking |
-| `.py`, `.js`, `.java`, etc. | Code-structure | AST-based function and class extraction |
-| `.csv`, `.tsv` | Row-group | Auto-detects Q&A, Document, or Bulk structure; vectorized for performance |
-| `.json`, `.yaml` | Key-path | Flattens nested structures into dot-path key-value chunks |
-| `.ipynb` | Cell-aware | Treats code and markdown cells separately |
+| `.py`, `.js`, `.java`, `.go`, `.rs`, etc. | Code-structure | AST-based function and class boundary detection |
+| `.csv`, `.tsv` | Row-group | Auto-detects Q&A / document / bulk structure; vectorized parsing |
+| `.json`, `.yaml`, `.yml` | Key-path | Flattens nested structures into dot-path key-value chunks |
+| `.ipynb` | Cell-aware | Separates code cells from markdown cells |
 
-### Embedding & Caching
+### Three-Level Caching
 
-Identical text segments are never embedded twice. The system uses a **SHA-256 content-addressable cache** stored in a SQLite database (`data/cache/embedding_cache.db`). At startup, cached embeddings are loaded into memory so subsequent builds retrieve them instantly without any API calls. New embeddings are persisted back in a single batch transaction per ingestion cycle.
+Retrieval and LLM caches are session-scoped, preventing any cross-user collisions. Cache keys are SHA-256 hashed. The background `CleanupScheduler` evicts stale entries every 10 minutes.
+
+### Metadata Enrichment
+
+When `ENABLE_CHUNK_ENRICHMENT=1`, a background thread runs after each ingestion:
+
+1. Fetches chunks with `enrichment_status='pending'` from the database in configurable batch sizes.
+2. Uses **TF-based keyword extraction** (no LLM required) for all chunks.
+3. Batches multiple chunk summaries into a **single LLM call** using a structured prompt (separated by `---`).
+4. Generates **hypothetical questions** per chunk (HyDE-style) to improve query-chunk semantic alignment.
+5. Updates the database with summaries, keywords, and questions in a single commit per batch.
+
+The enricher is **resumable** — restarting the server picks up from where it left off without re-processing already-enriched chunks. A semaphore caps concurrent enrichment workers at 3 to prevent LLM quota exhaustion.
 
 ### Session Isolation
 
-Each user upload creates a fully isolated session with its own directories:
+Each user upload creates a fully isolated session directory:
 
 ```
 data/sessions/{session_id}/
     documents/      ← Only this user's uploaded files
     chunks/         ← Chunk metadata JSON for this session
-    vector_store/   ← FAISS index for this session
+    vector_store/   ← FAISS index + BM25 index for this session
 ```
 
-Shared singletons (LLM, embedding service, reranker) are initialized once and reused across sessions to minimize memory and startup cost. A background `CleanupScheduler` runs every 10 minutes, deleting sessions older than 2 hours or idle for more than 1 hour, and pruning the retrieval and LLM caches.
+Shared singletons (LLM, embedding service, reranker) are initialized once at server startup and reused across all sessions. A background `CleanupScheduler` runs every 10 minutes, deleting sessions older than 2 hours or idle for 1+ hours.
 
 ## Architecture
 
-The system is built on modular, swappable components:
+### Agent Layer
 
-- **Loader** (`src/modules/Loader.py`): Multi-format document parsing with streaming for large PDFs and CSVs, scanned PDF detection, and OCR fallback.
-- **Chunking** (`src/modules/Chunking.py`): Extension-aware chunker with 8 strategies, PostgreSQL persistence via `executemany` batch inserts, and a thread-safe 50K-entry token count cache.
-- **Embeddings** (`src/modules/Embeddings.py`): Abstract embedding service with NVIDIA BGE-M3 as primary, disk-backed SQLite cache, in-memory deduplication, and retry with exponential backoff.
-- **VectorStore** (`src/modules/VectorStore.py`): FAISS-powered storage with O(1) reverse ID mapping, atomic file saves (write-to-.tmp then `os.replace`), and batch-add support.
-- **Retriever** (`src/modules/Retriever.py`): Dense search with optional NVIDIA API reranking; retrieves `k×3` candidates before reranking to top-k.
-- **QueryGeneration** (`src/modules/QueryGeneration.py`): `QueryHandler` orchestrates retrieval, context formatting, LLM call, and two-level (retrieval + LLM) SQLite caching.
-- **LLM** (`src/modules/LLM.py`): Provider-agnostic LLM layer; strips `<think>` reasoning blocks from model output automatically.
-- **ParallelPipeline** (`src/modules/ParallelPipeline.py`): Three-stage streaming pipeline with bounded queues and backpressure; standalone helpers (`load_documents_parallel`, `chunk_documents_parallel`, `embed_chunks`) can be used independently.
-- **Backend API** (`backend/`): FastAPI app with session lifecycle management, concurrency semaphore (max 5 concurrent ingest jobs), disk-space guard, and background cleanup.
-- **Frontend** (`frontend/`): React 19 + Vite SPA with multi-file upload, processing status polling, Markdown rendering, collapsible source citations, and auto-scroll.
+| Component | File | Responsibility |
+|---|---|---|
+| **AgentOrchestrator** | `src/agents/Orchestrator.py` | Top-level coordinator; enforces step cap, timeout, caching, and human-approved answer lookup |
+| **QueryPlanner** | `src/agents/Planner.py` | LLM-based query classification (6 types) + multi-hop decomposition; heuristic fallback |
+| **ConditionalRouter** | `src/agents/Router.py` | Routes plans to DIRECT_LLM / SINGLE_AGENT / MULTI_AGENT / HUMAN_REVIEW |
+| **RetrieverAgent** | `src/agents/RetrieverAgent.py` | Agent wrapper around `RAGRetriever`; checks retrieval cache first |
+| **SynthesizerAgent** | `src/agents/SynthesizerAgent.py` | Builds final prompt (system + context + query) and calls LLM |
+| **ValidatorAgent** | `src/agents/ValidatorAgent.py` | Secondary LLM call to check answer groundedness; catches hallucinations |
+| **Gatekeeper / HumanValidation** | `src/agents/HumanValidation.py` | Sensitivity + groundedness + confidence checks; review queue; approve/correct workflow |
+| **Tools** | `src/agents/Tools.py` | Agent tool definitions (search, summarise, etc.) |
+| **BaseAgent** | `src/agents/BaseAgent.py` | Abstract base with `AgentTask` / `AgentResult` dataclasses |
 
-### Architect Diagram
+### Core Modules
+
+| Component | File | Responsibility |
+|---|---|---|
+| **Loader** | `src/modules/Loader.py` | Multi-format parsing, PDF streaming, scanned PDF detection, OCR fallback |
+| **Chunking** | `src/modules/Chunking.py` | 8-strategy extension-aware chunker; 50K-entry token cache |
+| **DocumentParser** | `src/modules/DocumentParser.py` | Structure analysis with parse result caching |
+| **Embeddings** | `src/modules/Embeddings.py` | Provider-agnostic embedding service (NVIDIA/Gemini/HF/local); exponential backoff retry |
+| **VectorStore** | `src/modules/VectorStore.py` | FAISS (Flat/IVF/HNSW); O(1) reverse ID map; atomic file saves |
+| **Retriever** | `src/modules/Retriever.py` | `BM25Retriever` + `NvidiaReranker` + `RAGRetriever` (dense+sparse+RRF+rerank) |
+| **QueryCache** | `src/modules/QueryCache.py` | Session-scoped retrieval cache + LLM response cache |
+| **QueryGeneration** | `src/modules/QueryGeneration.py` | Legacy `QueryHandler` for global index / CLI path |
+| **MetadataEnricher** | `src/modules/MetadataEnricher.py` | Async background enricher: TF keywords + batched LLM summaries + HyDE questions |
+| **LLM** | `src/modules/LLM.py` | Provider-agnostic LLM; strips `<think>` reasoning blocks automatically |
+| **ParallelPipeline** | `src/modules/ParallelPipeline.py` | Three-stage streaming pipeline; standalone helpers for sequential reuse |
+| **Evaluator** | `src/evaluation/` | Per-query metrics: precision, recall, latency, route; rolling summary API |
+| **Backend API** | `backend/` | FastAPI app; session lifecycle; concurrency semaphore; disk guard; cleanup |
+| **Frontend** | `frontend/` | React 19 + Vite SPA; multi-file upload; polling; Markdown rendering; citations |
+
+### Architecture Diagram
 
 ![Architecture Diagram](Demo/Architecture_Diagram.png)
 
 ### Data Flow Diagram
 
-![Data Flow Diagram](Demo/DataFlow_Diagram.jpeg)
+![Data Flow Diagram](Demo/DataFlow_Diagram.png)
+
+## API Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/upload` | Upload a file; returns `session_id` |
+| `GET` | `/status/{session_id}` | Poll ingestion status (`pending` / `processing` / `ready` / `error`) |
+| `POST` | `/process/{session_id}` | Trigger processing of all uploaded files in a session |
+| `POST` | `/ask` | Ask a question; body: `{session_id, question, top_k, system_prompt, temperature, max_tokens}` |
+| `GET` | `/health` | Deep health check (DB, vector store, embedding service) |
+| `GET` | `/reviews/pending` | List queries pending human review |
+| `POST` | `/reviews/{id}/approve` | Approve the AI-generated answer for a pending review |
+| `POST` | `/reviews/{id}/correct` | Submit a corrected answer for a pending review |
+| `GET` | `/eval/summary` | Rolling evaluation metrics (precision, recall, latency, route distribution) |
+| `POST` | `/stress-test/{session_id}` | Run adversarial stress tests (requires `ENABLE_STRESS_TEST=1`) |
+
+### Deployment Architecture Diagram
+
+![Deployment Architecture](Demo/Deployment_Architecture.png)
 
 ## Requirements
 
 - Python 3.10+
-- Node.js 18+
+- Node.js 20+
 - PostgreSQL (SQLite fallback available for local development)
-- NVIDIA API Key (optional — for NVIDIA embeddings and reranking)
-- Google Gemini or OpenRouter API Key (for LLM responses)
+- NVIDIA API Key — required for BGE-M3 embeddings; also used for `nv-rerank-qa-mistral-4b:1` reranking
+- OpenRouter API Key — for LLM responses
 - Docker (optional — for containerized deployment)
 - Tesseract (optional — for OCR on scanned PDFs)
 
@@ -387,27 +568,41 @@ The system is built on modular, swappable components:
 
 **PostgreSQL Connection Errors**
 
-Ensure the database is running and credentials in `.env` match. The system will automatically fall back to SQLite if `DATABASE_URL` is not set or is a localhost URL on a remote server (e.g., Render).
+Ensure the database is running and credentials in `.env` match. The system falls back to SQLite automatically if `DATABASE_URL` is unset.
 
 **NVIDIA API Rate Limits or Timeouts**
 
-Increase `EMBEDDING_TIMEOUT` and `EMBEDDING_MAX_RETRIES` in `.env`. The embedding service retries with exponential backoff automatically.
+Increase `EMBEDDING_TIMEOUT` and `EMBEDDING_MAX_RETRIES` in `.env`. The embedding service retries with exponential backoff. For bulk ingestion, the concurrent embedding path (6 workers) may hit rate limits — reduce by setting `EMBED_WORKERS` in `IngestSession.py`.
+
+**BM25 Index Not Loading**
+
+If hybrid search falls back to dense-only after a build, check that `data/vector_store/bm25_index.pkl` was created. A missing file means BM25 build was skipped — usually indicates no text was extracted from documents. Check logs for chunking errors.
 
 **Scanned PDFs Produce No Text**
 
-Install OCR dependencies: `pip install pytesseract Pillow`. Then install the Tesseract binary for your OS. IntelliDocs will automatically detect scanned pages and apply OCR.
+Install OCR dependencies: `pip install pytesseract Pillow`. Install the Tesseract binary for your OS. IntelliDocs will automatically detect scanned pages and apply OCR.
 
 **OOM Errors During Embedding**
 
-If running with a local GPU model, reduce `EMBEDDING_BATCH_SIZE` or set `--device cpu`. For the NVIDIA API path, the IngestSession pipeline automatically falls back to sequential batching if concurrent embedding workers are overloaded.
+For GPU models, reduce `EMBEDDING_BATCH_SIZE` or set `--device cpu`. For the NVIDIA API path, the pipeline automatically halves batch size and retries up to 3 times on OOM.
 
 **Low Disk Space**
 
-Run the manual cleanup utility: `python -m backend.services.cleanup_storage`. This shows a storage breakdown and lets you delete old sessions and documents interactively.
+Run the manual cleanup utility:
+
+```bash
+python -m backend.services.cleanup_storage
+```
+
+This shows a storage breakdown by session and lets you delete old data interactively.
 
 **Session Processing Stuck**
 
-If a session stays in `processing` status for more than 2 minutes, check the application logs in `logs/`. Common causes are embedding API errors (check API key and quota) or PostgreSQL lock contention (run `python clear_db.py` to reset tables).
+If a session stays in `processing` for more than 2 minutes, check `logs/` for embedding API errors. The `CleanupScheduler` will eventually expire stuck sessions after 2 hours.
+
+**Enrichment Not Running**
+
+Background enrichment requires `ENABLE_CHUNK_ENRICHMENT=1` and a working LLM configuration. Check that `OPENROUTER_API_KEY` or `GEMINI_API_KEY` is set. Enrichment status per chunk can be queried from the `chunks` table: `SELECT enrichment_status, COUNT(*) FROM chunks GROUP BY enrichment_status;`
 
 ## License
 

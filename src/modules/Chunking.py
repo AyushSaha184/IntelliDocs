@@ -53,6 +53,7 @@ from src.utils.Logger import get_logger
 from src.modules.Loader import DocumentMetadata, Document
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from config.config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+from src.modules.DocumentParser import StructureAnalyzer, DocumentStructure
 
 logger = get_logger(__name__)
 
@@ -106,6 +107,11 @@ class ChunkMetadata:
     cell_type: Optional[str] = None
     char_offsets_approximate: bool = False
     source_url: Optional[str] = None
+    # Enrichment fields (populated async by MetadataEnricher)
+    summary: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    hypothetical_questions: Optional[List[str]] = None
+    enrichment_status: str = "pending"  # pending | enriched | failed
 
 
 @dataclass
@@ -158,6 +164,7 @@ class TextChunker:
         self.encoding_name = encoding_name
         self.min_chunk_size = min_chunk_size
         self.chunks_dir = chunks_dir or os.path.join(os.path.dirname(__file__), "../../data/chunks")
+        self.structure_analyzer = StructureAnalyzer()
         
         # Database configuration
         self.use_db = use_db
@@ -518,15 +525,169 @@ class TextChunker:
         
         return tables
     
-    def _chunk_semantic_text(self, text: str, doc_id: str, doc_name: str = "") -> List[Dict]:
-        """Semantic text chunking for PDF/DOCX/TXT - 600 tokens, 15% overlap
+    def _chunk_semantic_text(
+        self, 
+        text: str, 
+        doc_id: str, 
+        doc_name: str = "",
+        structure: Optional['DocumentStructure'] = None,
+        file_ext: str = "",
+    ) -> List[Dict]:
+        """Semantic text chunking for PDF/DOCX/TXT
         
         Now with table-aware chunking: Tables are detected and kept as atomic units.
+        Features section-driven sliding boundaries + tiny section prevention loop.
         """
         if not text:
             return []
         
         chunks = []
+        target_tokens = self.chunk_size
+        overlap_tokens = int(target_tokens * 0.15) if self.chunk_overlap > 0 else 0
+        
+        has_sections = structure and structure.has_structure and getattr(structure, 'section_spans', None)
+        
+        if has_sections:
+            logger.debug(
+                f"Semantic chunking using structure: "
+                f"{len(structure.section_spans)} sections, "
+                f"{len(structure.table_spans)} tables"
+            )
+            
+            import bisect
+            
+            for start_idx, end_idx, section_label in structure.section_spans:
+                section_text = text[start_idx:end_idx]
+                if not section_text.strip():
+                    continue
+                    
+                section_token_count = self._count_tokens(section_text)
+                
+                # Prevent tiny-section chunk explosion
+                if section_token_count < target_tokens * 0.6:
+                    chunks.append({
+                        'text': section_text,
+                        'start_char': start_idx,
+                        'end_char': end_idx,
+                        'metadata': {'section_title': section_label}
+                    })
+                    continue
+                    
+                # Sub-chunk the section
+                paragraphs = section_text.split('\n\n')
+                current_chunk = []
+                current_tokens_list = []
+                current_tokens = 0
+                
+                chunk_start_char = start_idx
+                para_offset = start_idx
+                
+                for para in paragraphs:
+                    para_len = len(para)
+                    if not para.strip():
+                        para_offset += para_len + 2
+                        continue
+                        
+                    # Hard Table Protection
+                    # Check if paragraph offset intersects any table span
+                    intersect_table = (
+                        structure.table_spans and 
+                        StructureAnalyzer.is_inside_any_table(para_offset, structure.table_spans, structure.table_starts)
+                    )
+                    
+                    if intersect_table:
+                        idx = bisect.bisect_right(structure.table_starts, para_offset)
+                        t_start, t_end = structure.table_spans[idx - 1]
+                        
+                        already_emitted = (
+                            chunks and 
+                            chunks[-1]['start_char'] == t_start and 
+                            chunks[-1].get('metadata', {}).get('contains_table')
+                        )
+                        
+                        if not already_emitted:
+                            # Flush current piece before table
+                            if current_chunk:
+                                chunk_text = ' '.join(current_chunk)
+                                chunks.append({
+                                    'text': chunk_text,
+                                    'start_char': chunk_start_char,
+                                    'end_char': chunk_start_char + len(chunk_text),
+                                    'metadata': {'section_title': section_label}
+                                })
+                                current_chunk = []
+                                current_tokens_list = []
+                                current_tokens = 0
+                                
+                            # Emit Table as Atomic Chunk
+                            table_text = text[t_start:t_end]
+                            chunks.append({
+                                'text': table_text,
+                                'start_char': t_start,
+                                'end_char': t_end,
+                                'metadata': {
+                                    'section_title': section_label,
+                                    'contains_table': True
+                                }
+                            })
+                            # Smarter overlap policy: overlap = 0 around tables
+                            
+                        # Advance paragraph offset
+                        chunk_start_char = max(chunk_start_char, t_end)
+                        para_offset += para_len + 2
+                        continue
+                    
+                    # Normal paragraph split
+                    sentences = SENTENCE_PATTERN.split(para)
+                    for sentence in sentences:
+                        if not sentence.strip():
+                            continue
+                            
+                        sentence_tokens = self._count_tokens(sentence)
+                        
+                        if current_tokens + sentence_tokens > target_tokens and current_chunk:
+                            chunk_text = ' '.join(current_chunk)
+                            chunks.append({
+                                'text': chunk_text,
+                                'start_char': chunk_start_char,
+                                'end_char': chunk_start_char + len(chunk_text),
+                                'metadata': {'section_title': section_label}
+                            })
+                            
+                            # Normal overlap
+                            overlap_items = []
+                            overlap_tokens_count = 0
+                            for item in reversed(current_tokens_list):
+                                s, s_toks = item
+                                if overlap_tokens_count + s_toks > overlap_tokens:
+                                    break
+                                overlap_items.insert(0, item)
+                                overlap_tokens_count += s_toks
+                                
+                            current_chunk = [s for s, _ in overlap_items]
+                            current_tokens_list = overlap_items
+                            current_tokens = overlap_tokens_count
+                            chunk_start_char = chunk_start_char + len(chunk_text) - len(' '.join(current_chunk))
+                            
+                        current_chunk.append(sentence)
+                        current_tokens_list.append((sentence, sentence_tokens))
+                        current_tokens += sentence_tokens
+                        
+                    para_offset += para_len + 2
+                    
+                # Final chunk in section
+                if current_chunk:
+                    chunk_text = ' '.join(current_chunk)
+                    chunks.append({
+                        'text': chunk_text,
+                        'start_char': chunk_start_char,
+                        'end_char': chunk_start_char + len(chunk_text),
+                        'metadata': {'section_title': section_label}
+                    })
+                    
+            return chunks
+
+        # Fallback to legacy structure block
         target_tokens = 600
         overlap_tokens = int(target_tokens * 0.15)  # 15% overlap = 90 tokens
         
@@ -1283,7 +1444,9 @@ class TextChunker:
         # Route to appropriate chunking method
         chunk_dicts = []
         if strategy_name == ChunkingStrategy.SEMANTIC:
-            chunk_dicts = self._chunk_semantic_text(text, doc_id, doc_name)
+            # Run structure analysis only for semantic chunking (PDF/DOCX/TXT)
+            structure = self.structure_analyzer.detect_document_structure(text, file_ext=file_ext)
+            chunk_dicts = self._chunk_semantic_text(text, doc_id, doc_name, structure=structure, file_ext=file_ext)
         elif strategy_name == ChunkingStrategy.HEADER_BASED:
             chunk_dicts = self._chunk_markdown(text, doc_id)
         elif strategy_name == ChunkingStrategy.DOM_AWARE:
