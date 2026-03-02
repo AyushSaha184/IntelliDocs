@@ -367,11 +367,11 @@ The system is built on modular, swappable components:
 
 ### Architect Diagram
 
-<img src="./Demo/Architecture_Diagram.png" alt="Architecture Diagram" width="800" />
+![Architecture Diagram](Demo/Architecture_Diagram.png)
 
 ### Data Flow Diagram
 
-<img src="./Demo/DataFlow_Diagram.jpeg" alt="Data Flow Diagram" width="800" />
+![Data Flow Diagram](Demo/DataFlow_Diagram.jpeg)
 
 ## Requirements
 

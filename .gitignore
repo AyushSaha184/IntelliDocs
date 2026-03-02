@@ -45,7 +45,9 @@ render.yaml
 # Data and logs
 data/
 logs/
-Demo/
+Demo/*
+!Demo/Architecture_Diagram.png
+!Demo/DataFlow_Diagram.jpeg
 
 # Jupyter
 .ipynb_checkpoints/
