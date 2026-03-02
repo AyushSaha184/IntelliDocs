@@ -147,127 +147,134 @@ export default function App() {
     };
 
     return (
-        <div className="flex flex-col h-screen bg-[#343541]">
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-white/20 flex-shrink-0">
-                <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-full bg-[#10a37f] flex items-center justify-center">
+        <div className="flex h-screen bg-[#343541] overflow-hidden">
+            {/* Left Sidebar (Full Height) */}
+            <div className="hidden md:flex flex-col w-64 lg:w-80 bg-[#202123] border-r border-white/20 p-4 lg:p-6 overflow-y-auto flex-shrink-0 text-gray-300 transition-all duration-300">
+                <div className="flex items-center gap-2 mb-8">
+                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[#10a37f] flex items-center justify-center">
                         <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                         </svg>
                     </div>
                     <h1 className="text-white font-semibold text-sm sm:text-base">IntelliDocs</h1>
                 </div>
-                <button
-                    onClick={handleClear}
-                    className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-white text-xs sm:text-sm"
-                    disabled={messages.length === 0 && uploadedFiles.length === 0}
-                >
-                    Clear
-                </button>
+
+                <h2 className="text-white text-base lg:text-lg font-semibold mb-3">About IntelliDocs</h2>
+                <p className="text-xs lg:text-sm leading-relaxed mb-6">
+                    This RAG-powered AI assistant enables organizations to instantly unlock insights from their internal knowledge base. It intelligently processes diverse data sources and delivers precise, context-aware answers in real time. Built for seamless integration into existing applications and workflows, the system supports both long-form analytical queries and quick factual lookups, helping teams research faster and make better-informed decisions.
+                </p>
+
+                <h3 className="text-white font-medium mb-3 text-sm lg:text-base">Supported Documents:</h3>
+                <ul className="text-xs lg:text-sm space-y-2 list-disc pl-4 text-gray-400">
+                    <li>Company policies</li>
+                    <li>HR documents</li>
+                    <li>FAQs</li>
+                    <li>Financial summaries</li>
+                    <li>Product documentation</li>
+                    <li>CSV structured data</li>
+                    <li>Website content (marketing and general information)</li>
+                </ul>
             </div>
 
-            {/* Main Layout */}
-            <div className="flex flex-1 overflow-hidden">
-                {/* Left Sidebar */}
-                <div className="hidden md:flex flex-col w-64 lg:w-80 bg-[#202123] border-r border-white/20 p-4 lg:p-6 overflow-y-auto flex-shrink-0 text-gray-300 transition-all duration-300">
-                    <h2 className="text-white text-base lg:text-lg font-semibold mb-3">About IntelliDocs</h2>
-                    <p className="text-xs lg:text-sm leading-relaxed mb-6">
-                        This RAG-powered AI assistant enables organizations to instantly unlock insights from their internal knowledge base. It intelligently processes diverse data sources and delivers precise, context-aware answers in real time. Built for seamless integration into existing applications and workflows, the system supports both long-form analytical queries and quick factual lookups, helping teams research faster and make better-informed decisions.
-                    </p>
+            {/* Main Content Area */}
+            <div className="flex flex-col flex-1 overflow-hidden relative">
+                {/* Top Action Bar (No Border, Clear Button on Right) */}
+                <div className="flex justify-between md:justify-end items-center p-4 flex-shrink-0 z-10">
+                    {/* Mobile Logo shows here only since sidebar is hidden on mobile */}
+                    <div className="flex items-center gap-2 md:hidden">
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[#10a37f] flex items-center justify-center">
+                            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                            </svg>
+                        </div>
+                        <h1 className="text-white font-semibold text-sm">IntelliDocs</h1>
+                    </div>
 
-                    <h3 className="text-white font-medium mb-3 text-sm lg:text-base">Supported Documents:</h3>
-                    <ul className="text-xs lg:text-sm space-y-2 list-disc pl-4 text-gray-400">
-                        <li>Company policies</li>
-                        <li>HR documents</li>
-                        <li>FAQs</li>
-                        <li>Financial summaries</li>
-                        <li>Product documentation</li>
-                        <li>CSV structured data</li>
-                        <li>Website content (marketing and general information)</li>
-                    </ul>
+                    <button
+                        onClick={handleClear}
+                        className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-white text-xs sm:text-sm"
+                        disabled={messages.length === 0 && uploadedFiles.length === 0}
+                    >
+                        Clear
+                    </button>
                 </div>
+                {/* Messages Area */}
+                <div className="flex-1 overflow-y-auto">
+                    {messages.length === 0 && uploadedFiles.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full px-4 py-6 text-center">
+                            <p className="text-gray-400 max-w-md mb-6 sm:mb-8 text-sm sm:text-base px-4">
+                                Upload documents and ask questions. I'll search through your files and provide accurate answers.
+                            </p>
 
-                {/* Main Content Area */}
-                <div className="flex flex-col flex-1 overflow-hidden">
-                    {/* Messages Area */}
-                    <div className="flex-1 overflow-y-auto">
-                        {messages.length === 0 && uploadedFiles.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-full px-4 py-6 text-center">
-                                <p className="text-gray-400 max-w-md mb-6 sm:mb-8 text-sm sm:text-base px-4">
-                                    Upload documents and ask questions. I'll search through your files and provide accurate answers.
-                                </p>
-
-                                {/* Supported File Types Box */}
-                                <div className="max-w-3xl w-full bg-[#40414F] rounded-lg p-4 sm:p-6" style={{ border: '2px solid white' }}>
-                                    <div className="flex items-center gap-2 text-white mb-3 sm:mb-4">
-                                        <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                        </svg>
-                                        <span className="font-semibold text-sm sm:text-base">Supported File Types (20MB max)</span>
+                            {/* Supported File Types Box */}
+                            <div className="max-w-3xl w-full bg-[#40414F] rounded-lg p-4 sm:p-6" style={{ border: '2px solid white' }}>
+                                <div className="flex items-center gap-2 text-white mb-3 sm:mb-4">
+                                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                    <span className="font-semibold text-sm sm:text-base">Supported File Types (20MB max)</span>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
+                                    <div>
+                                        <h3 className="text-white font-medium mb-2 text-sm">Documents</h3>
+                                        <p className="text-xs sm:text-sm text-gray-400">PDF, Word, PowerPoint</p>
+                                        <p className="text-xs sm:text-sm text-gray-400">Excel</p>
+                                        <p className="text-xs sm:text-sm text-gray-400" title="Smart Detection for Q&A, Documents, and Bulk data">CSV</p>
                                     </div>
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
-                                        <div>
-                                            <h3 className="text-white font-medium mb-2 text-sm">Documents</h3>
-                                            <p className="text-xs sm:text-sm text-gray-400">PDF, Word, PowerPoint</p>
-                                            <p className="text-xs sm:text-sm text-gray-400">Excel</p>
-                                            <p className="text-xs sm:text-sm text-gray-400" title="Smart Detection for Q&A, Documents, and Bulk data">CSV</p>
-                                        </div>
-                                        <div>
-                                            <h3 className="text-white font-medium mb-2 text-sm">Text/Markup</h3>
-                                            <p className="text-xs sm:text-sm text-gray-400">TXT, Markdown, RST</p>
-                                            <p className="text-xs sm:text-sm text-gray-400">JSON, XML, HTML</p>
-                                        </div>
-                                        <div>
-                                            <h3 className="text-white font-medium mb-2 text-sm">Code Files</h3>
-                                            <p className="text-xs sm:text-sm text-gray-400">Python, JavaScript</p>
-                                            <p className="text-xs sm:text-sm text-gray-400">Java, C/C++, Shell, YAML</p>
-                                        </div>
+                                    <div>
+                                        <h3 className="text-white font-medium mb-2 text-sm">Text/Markup</h3>
+                                        <p className="text-xs sm:text-sm text-gray-400">TXT, Markdown, RST</p>
+                                        <p className="text-xs sm:text-sm text-gray-400">JSON, XML, HTML</p>
+                                    </div>
+                                    <div>
+                                        <h3 className="text-white font-medium mb-2 text-sm">Code Files</h3>
+                                        <p className="text-xs sm:text-sm text-gray-400">Python, JavaScript</p>
+                                        <p className="text-xs sm:text-sm text-gray-400">Java, C/C++, Shell, YAML</p>
                                     </div>
                                 </div>
                             </div>
-                        ) : (
-                            <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6">
-                                {messages.map((msg, idx) => (
-                                    <ChatMessage key={idx} message={msg} />
-                                ))}
-                                {isGenerating && (
-                                    <ChatMessage
-                                        message={{
-                                            role: 'assistant',
-                                            content: '',
-                                            timestamp: Date.now(),
-                                            isTyping: true
-                                        }}
-                                    />
-                                )}
-                                <div ref={messagesEndRef} />
-                            </div>
-                        )}
-                    </div>
+                        </div>
+                    ) : (
+                        <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6">
+                            {messages.map((msg, idx) => (
+                                <ChatMessage key={idx} message={msg} />
+                            ))}
+                            {isGenerating && (
+                                <ChatMessage
+                                    message={{
+                                        role: 'assistant',
+                                        content: '',
+                                        timestamp: Date.now(),
+                                        isTyping: true
+                                    }}
+                                />
+                            )}
+                            <div ref={messagesEndRef} />
+                        </div>
+                    )}
+                </div>
 
-                    {/* Input Area */}
-                    <div className="border-t border-white/20 bg-[#343541] flex-shrink-0">
-                        <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-3 sm:py-4">
-                            <ChatInput
-                                onSend={handleSend}
-                                onUpload={handleUpload}
-                                onProcess={handleProcess}
-                                disabled={isGenerating}
-                                placeholder={isGenerating ? "Waiting for response..." : "Send a message..."}
-                                uploadedFiles={uploadedFiles}
-                                isProcessing={isProcessing}
-                                isProcessed={isProcessed}
-                            />
-                            <div className="text-center text-xs text-gray-500 mt-2 flex flex-col items-center gap-1">
-                                <span>
-                                    {isProcessing ? "Processing documents..." : !isProcessed && uploadedFiles.length > 0 ? "Click Process to start asking questions" : "AI can make mistakes. Please double check important info."}
-                                </span>
-                                <span className="text-yellow-500/60 flex items-center gap-1">
-                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                    Sessions and documents automatically expire after 30 minutes of inactivity
-                                </span>
-                            </div>
+                {/* Input Area */}
+                <div className="bg-[#343541] flex-shrink-0">
+                    <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-3 sm:py-4">
+                        <ChatInput
+                            onSend={handleSend}
+                            onUpload={handleUpload}
+                            onProcess={handleProcess}
+                            disabled={isGenerating}
+                            placeholder={isGenerating ? "Waiting for response..." : "Send a message..."}
+                            uploadedFiles={uploadedFiles}
+                            isProcessing={isProcessing}
+                            isProcessed={isProcessed}
+                        />
+                        <div className="text-center text-xs text-gray-500 mt-2 flex flex-col items-center gap-1">
+                            <span>
+                                {isProcessing ? "Processing documents..." : !isProcessed && uploadedFiles.length > 0 ? "Click Process to start asking questions" : "AI can make mistakes. Please double check important info."}
+                            </span>
+                            <span className="text-yellow-500/60 flex items-center gap-1">
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                Sessions and documents automatically expire after 30 minutes of inactivity
+                            </span>
                         </div>
                     </div>
                 </div>

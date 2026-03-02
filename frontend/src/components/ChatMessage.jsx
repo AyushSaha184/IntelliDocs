@@ -100,43 +100,6 @@ export default function ChatMessage({ message }) {
                             <div className="prose prose-invert max-w-none text-xs sm:text-sm pr-6">
                                 <ReactMarkdown>{message.content}</ReactMarkdown>
                             </div>
-
-                            {message.sources && message.sources.length > 0 && (() => {
-                                const uniqueSources = new Set();
-                                const formattedSources = [];
-                                message.sources.forEach((source) => {
-                                    const match = source.match(/^\[(.*?), (Page \d+|Row \d+)\]/i);
-                                    let docName = null;
-                                    let locationDesc = "";
-                                    if (match) {
-                                        docName = match[1].trim();
-                                        const locMatch = match[2].match(/\d+/);
-                                        if (locMatch) locationDesc = ` (Page no.: ${locMatch[0]})`;
-                                    } else {
-                                        const fallbackMatch = source.match(/^\[(.*?)\]/);
-                                        if (fallbackMatch) {
-                                            const name = fallbackMatch[1].trim();
-                                            if (name) docName = name;
-                                        }
-                                    }
-                                    if (!docName) return;
-                                    const key = `${docName}${locationDesc}`;
-                                    if (!uniqueSources.has(key)) {
-                                        uniqueSources.add(key);
-                                        formattedSources.push(`${docName}${locationDesc}`);
-                                    }
-                                });
-                                if (formattedSources.length === 0) return null;
-                                return (
-                                    <div className="mt-4 pt-4 border-t border-white/20">
-                                        <ul className="text-xs sm:text-sm text-gray-400 list-disc pl-4 space-y-1">
-                                            {formattedSources.map((src, idx) => (
-                                                <li key={idx} className="leading-relaxed">{src}</li>
-                                            ))}
-                                        </ul>
-                                    </div>
-                                );
-                            })()}
                         </>
                     )}
                 </div>
