@@ -600,10 +600,6 @@ def run_interactive_query(args):
                     )
                     
                     print("\n" + "="*80)
-                    print("AI RESPONSE")
-                    print("="*80)
-                    print(result.llm_response)
-                    print("\n" + "="*80)
                     print("SOURCES")
                     print("="*80)
                     
@@ -614,6 +610,12 @@ def run_interactive_query(args):
                         print(f"Document: {meta['document_id']} | Chunk: {meta['chunk_id']}")
                         display_text = chunk[:200] + "..." if len(chunk) > 200 else chunk
                         print(display_text)
+
+                    print("\n" + "="*80)
+                    print("AI RESPONSE")
+                    print("="*80)
+                    print(result.llm_response)
+                    print("\n" + "="*80)
                 else:
                     # Retrieval-only mode
                     result = query_handler.process_query(user_input, top_k=args.top_k)
@@ -996,16 +998,18 @@ def run_test_query(args):
         
         if llm:
             result = query_handler.process_query_with_response(args.test_query, top_k=args.top_k)
-            print("="*80)
-            print("AI RESPONSE")
-            print("="*80)
-            print(result.llm_response)
             print("\n" + "="*80)
             print("SOURCES")
             print("="*80)
             for i, (chunk, score) in enumerate(zip(result.retrieved_chunks, result.retrieval_scores), 1):
                 print(f"[{i}] Score: {score:.2%}")
                 print(f"    {chunk[:150]}...\n")
+
+            print("="*80)
+            print("AI RESPONSE")
+            print("="*80)
+            print(result.llm_response)
+            print("\n" + "="*80)
         else:
             result = query_handler.process_query(args.test_query, top_k=args.top_k)
             print(f"Retrieved {len(result.retrieved_chunks)} chunks:\n")

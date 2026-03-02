@@ -48,10 +48,10 @@ RUN mkdir -p data/sessions data/documents data/chunks data/vector_store logs
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Embedding: use Gemini API (no local model needed)
-ENV EMBEDDING_PROVIDER=gemini
-ENV EMBEDDING_MODEL=gemini-embedding-001
-ENV EMBEDDING_DIMENSION=768
+# Embedding: use NVIDIA API (optimized for scale)
+ENV EMBEDDING_PROVIDER=nvidia
+ENV EMBEDDING_MODEL=baai/bge-m3
+ENV EMBEDDING_DIMENSION=1024
 
 # LLM: keep OpenRouter (or set GEMINI_API_KEY via Render dashboard)
 # Set these via Render Environment Variables dashboard:

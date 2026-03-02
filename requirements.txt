@@ -1,19 +1,12 @@
 # LLM & RAG Framework
 openai
-anthropic
-google-genai
-huggingface_hub  # Only for embeddings
 
 # Vector Stores & Embeddings
-chromadb
-pinecone-client
 faiss-cpu
-sentence-transformers
-FlagEmbedding  # BGE-M3 multi-representation (dense, sparse, ColBERT)
 
 # Document Parsing & Ingestion
 unstructured[pdf,docx,xlsx]
-PyMuPDF  # Fast PDF loading (10x faster than unstructured for PDFs)
+PyMuPDF 
 python-magic-bin  # Bundles libmagic DLL for Windows; on Linux/Docker use python-magic + libmagic1 instead
 python-docx
 openpyxl
@@ -26,35 +19,29 @@ pillow
 # Data Processing
 pandas
 numpy
-scikit-learn
 
 # Web Framework & APIs
-Flask
 FastAPI
 python-multipart
 uvicorn
 requests
-aiohttp
 
 # Database
 sqlalchemy
 psycopg2-binary
 
-# Text Processing & NLP
-nltk
-spacy
-transformers
 
 # Configuration & Environment
 python-dotenv
 pydantic
-pydantic-settings
+
 
 # Logging & Monitoring
 structlog
-python-logging-loki
 
-# Utilities
+# Utilities & Performance
 tqdm
-click
+torch   
+tiktoken 
+psutil   
 pyyaml

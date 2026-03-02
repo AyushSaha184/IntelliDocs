@@ -44,34 +44,37 @@ services:
         fromDatabase:
           name: rag-assistant-db
           property: password
-      # Gemini Embedding API (set in dashboard for production)
+      # NVIDIA Embedding API 
       - key: EMBEDDING_PROVIDER
-        value: gemini
+        value: nvidia
       - key: EMBEDDING_MODEL
-        value: gemini-embedding-001
+        value: baai/bge-m3
       - key: EMBEDDING_DIMENSION
-        value: "768"
+        value: "1024"
       - key: EMBEDDING_NORMALIZE
         value: "true"
       # OpenRouter LLM Configuration
       - key: LLM_PROVIDER
         value: openrouter
       - key: LLM_MODEL
-        value: deepseek/deepseek-r1-0528:free
+        value: nvidia/nemotron-3-nano-30b-a3b:free
       - key: LLM_TEMPERATURE
         value: "0.7"
       - key: LLM_MAX_TOKENS
         value: "4000"
       - key: OPENROUTER_API_KEY
         sync: false  # Set this manually in Render dashboard
-      - key: GEMINI_API_KEY
-        sync: false  # REQUIRED — set in Render dashboard (used for embeddings)
+      - key: NVIDIA_API_KEY
+        sync: false  # REQUIRED — set in Render dashboard (used for embeddings & reranking)
       - key: OPENROUTER_SITE_URL
         value: https://rag-assistant.onrender.com
       - key: OPENROUTER_SITE_NAME
         value: RAG_Assistant
+      # Reranker Configuration
       - key: USE_RERANKER
-        value: "false"
+        value: "true"
+      - key: RERANKER_MODEL
+        value: nv-rerank-qa-mistral-4b:1
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: PYTHONPATH

@@ -1,6 +1,5 @@
 # Environment variables
 .env
-.env.local
 
 # Node.js
 node_modules/
@@ -15,9 +14,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
 venv/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -35,8 +32,6 @@ wheels/
 *.egg
 
 # Project documentation
-STARTUP_GUIDE.md
-docker.MD
 render.yaml
 
 # IDE
@@ -50,6 +45,7 @@ render.yaml
 # Data and logs
 data/
 logs/
+Demo/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -61,12 +57,3 @@ logs/
 htmlcov/
 
 uninstall.txt
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/

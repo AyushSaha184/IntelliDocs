@@ -20,4 +20,3 @@ logs/*
 .vscode
 docker-compose.yml
 render.yaml
-docker.MD

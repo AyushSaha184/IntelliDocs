@@ -30,20 +30,21 @@ services:
       # Database (points to the 'db' service above)
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/rag_db
 
-      # Embedding: in-process sentence-transformers (no LM Studio needed)
-      EMBEDDING_PROVIDER: local
-      EMBEDDING_MODEL: BAAI/bge-m3
+      # Embedding: use NVIDIA API (consistent with Render)
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-nvidia}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-baai/bge-m3}
+      EMBEDDING_DIMENSION: "1024"
 
-      # Reranker: in-process CrossEncoder (no LM Studio needed)
-      RERANKER_PROVIDER: local
-      RERANKER_MODEL: BAAI/bge-reranker-v2-m3
+      # Reranker: use NVIDIA API
+      RERANKER_PROVIDER: ${RERANKER_PROVIDER:-nvidia}
+      RERANKER_MODEL: ${RERANKER_MODEL:-nv-rerank-qa-mistral-4b:1}
       USE_RERANKER: "true"
 
-      # LLM: set your API key(s) here or in .env file
-      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
-      LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # LLM: use OpenRouter as default
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3-nano-30b-a3b:free}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
 
       # Python
       PYTHONPATH: /app
