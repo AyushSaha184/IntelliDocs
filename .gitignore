@@ -47,7 +47,9 @@ data/
 logs/
 Demo/*
 !Demo/Architecture_Diagram.png
-!Demo/DataFlow_Diagram.jpeg
+!Demo/DataFlow_Diagram.png
+!Demo/MultiAgent.png
+
 
 # Runtime-generated index and cache files (never commit)
 data/vector_store/bm25_index.pkl
