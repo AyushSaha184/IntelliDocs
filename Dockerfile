@@ -1,6 +1,6 @@
 # Multi-stage build for RAG Assistant on Render.com
 # Stage 1: Build Frontend
-FROM node:18-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -21,12 +21,12 @@ FROM python:3.11-slim
 
 # Install system dependencies (libmagic for unstructured, poppler for PDFs)
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    curl \
-    libmagic1 \
-    poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+  gcc \
+  g++ \
+  curl \
+  libmagic1 \
+  poppler-utils \
+  && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
