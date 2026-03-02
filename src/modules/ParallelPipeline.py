@@ -579,6 +579,9 @@ class ParallelRAGPipeline:
             index_type=index_type,
             store_path=str(self.vector_store_dir),
         )
+        
+        from src.modules.Retriever import BM25Retriever
+        self.bm25_retriever = BM25Retriever(store_path=str(self.vector_store_dir))
 
         self.stats = PipelineStats()
 
@@ -821,6 +824,12 @@ class ParallelRAGPipeline:
                             buf[:buf_idx].copy(), buf_meta, buf_ids,
                             batch_size=buf_idx,
                         )
+                        # Add to BM25 retriever
+                        self.bm25_retriever.add_texts(
+                            chunk_ids=buf_ids,
+                            texts=[meta["text"] for meta in buf_meta]
+                        )
+                        
                         self.stats.embeddings_generated += buf_idx
                         logger.info(
                             f"Embedded {self.stats.embeddings_generated} vectors so far"
@@ -835,6 +844,12 @@ class ParallelRAGPipeline:
                 buf[:buf_idx].copy(), buf_meta, buf_ids,
                 batch_size=buf_idx,
             )
+            # Add to BM25 retriever
+            self.bm25_retriever.add_texts(
+                chunk_ids=buf_ids,
+                texts=[meta["text"] for meta in buf_meta]
+            )
+            
             self.stats.embeddings_generated += buf_idx
             logger.info(f"Flushed final {buf_idx} embeddings")
 
@@ -931,6 +946,9 @@ class ParallelRAGPipeline:
                 f"[DONE] Vector store saved: "
                 f"{self.vector_store.get_size()} vectors"
             )
+            self.bm25_retriever.build()
+            self.bm25_retriever.save()
+            logger.info("[DONE] BM25 sparse index built and saved")
 
             self.stats.total_time = time.time() - pipeline_start
 

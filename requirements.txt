@@ -3,6 +3,7 @@ openai
 
 # Vector Stores & Embeddings
 faiss-cpu
+rank-bm25
 
 # Document Parsing & Ingestion
 unstructured[pdf,docx,xlsx]

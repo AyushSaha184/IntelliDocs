@@ -43,6 +43,7 @@ DocumentLoader = DocumentMetadata = load_documents = None
 TextChunker = TextChunk = ChunkingStrategy = create_chunker = None
 create_embedding_service = None
 FAISSVectorStore = None
+BM25Retriever = None
 RAGRetriever = NvidiaReranker = None
 QueryHandler = None
 create_llm = BaseLLM = None
@@ -71,6 +72,9 @@ def _load_heavy_imports():
 
     from src.modules.VectorStore import FAISSVectorStore as _FVS
     FAISSVectorStore = _FVS
+
+    from src.modules.Retriever import BM25Retriever as _BM25
+    BM25Retriever = _BM25
 
     from src.modules.Retriever import RAGRetriever as _RR, NvidiaReranker as _NR
     RAGRetriever, NvidiaReranker = _RR, _NR
@@ -317,13 +321,17 @@ class RAGPipeline:
         # Initialize reranker if enabled
         self.reranker = _create_reranker()
         
-        # Initialize retriever with optional reranking
+        # Initialize sparse retriever
+        self.bm25_retriever = BM25Retriever(store_path=self.vector_store_dir)
+        
+        # Initialize retriever with optional reranking and sparse retrieval
         self.retriever = RAGRetriever(
             vector_store=self.vector_store,
             embedding_service=self.embedding_service,
             chunks={},
             reranker=self.reranker,
-            use_reranker=USE_RERANKER
+            use_reranker=USE_RERANKER,
+            bm25_retriever=self.bm25_retriever
         )
         
         self.processing_stats = {
@@ -437,6 +445,11 @@ class RAGPipeline:
                 chunk_ids,
                 batch_size=VECTOR_BATCH_SIZE
             )
+            
+            # Add to Sparse Index
+            if hasattr(self, 'bm25_retriever'):
+                self.bm25_retriever.add_texts(chunk_ids, chunk_texts)
+                
             logger.info(f"Added {len(vectors)} vectors to store")
             self.processing_stats["total_vectors"] += len(vectors)
         
@@ -501,13 +514,19 @@ def run_interactive_query(args):
         # Initialize reranker if enabled
         reranker = _create_reranker()
         
+        # Initialize sparse retriever
+        bm25_retriever = BM25Retriever(store_path=args.vector_store_dir)
+        if bm25_retriever.load():
+            logger.info("Loaded BM25 sparse index.")
+        
         # Initialize retriever with optional reranking
         retriever = RAGRetriever(
             vector_store=vector_store,
             embedding_service=embedding_service,
             chunks=chunks,
             reranker=reranker,
-            use_reranker=USE_RERANKER
+            use_reranker=USE_RERANKER,
+            bm25_retriever=bm25_retriever
         )
         
         # Initialize LLM (OpenRouter, Google Gemini, or HuggingFace)
@@ -703,9 +722,13 @@ def ingest_single_file(pipeline: 'RAGPipeline', file_path: str) -> bool:
             logger.error("Pipeline missing embedding capability")
             return False
         
-        # 4. Save Vector Store to Disk
+        # 4. Save Vector Store and Sparse Index to Disk
         if hasattr(pipeline, 'vector_store'):
             pipeline.vector_store.save(pipeline.vector_store_dir)
+            
+        if hasattr(pipeline, 'bm25_retriever'):
+            pipeline.bm25_retriever.build()
+            pipeline.bm25_retriever.save()
         
         logger.info(f"Successfully ingested {file_path}")
         return True
@@ -789,6 +812,16 @@ def run_api_server(args):
                 logger.info("Loaded existing vector store.")
             except Exception as e:
                 logger.warning(f"Could not load vector store (might be new): {e}")
+
+            # Load existing BM25 sparse index if available
+            try:
+                if hasattr(pipeline_global, 'bm25_retriever'):
+                    if pipeline_global.bm25_retriever.load():
+                        logger.info("Loaded existing BM25 sparse index.")
+                    else:
+                        logger.warning("No existing BM25 index found.")
+            except Exception as e:
+                logger.warning(f"Could not load BM25 index: {e}")
 
             # Load existing chunks metadata for the Retriever
             # (RAGPipeline initializes retriever with empty chunks dict)
@@ -1146,7 +1179,15 @@ Note: By default, --build clears existing databases for a fresh rebuild.
                     for file in vector_store_path.glob("*"):
                         if file.is_file():
                             file.unlink()
-                    logger.info("  [OK] Cleared vector_store")
+                    logger.info("  [OK] Cleared vector_store (including BM25 index)")
+                
+                # Clear chunks metadata files
+                chunks_path = Path(args.chunks_dir)
+                if chunks_path.exists():
+                    for file in chunks_path.glob("*"):
+                        if file.is_file():
+                            file.unlink()
+                    logger.info("  [OK] Cleared chunks metadata")
                 
                 # Clear log files (skip files in use by current logger)
                 logs_path = Path("logs")

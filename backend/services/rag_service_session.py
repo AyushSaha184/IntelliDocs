@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.Retriever import RAGRetriever, NvidiaReranker
+from src.modules.Retriever import RAGRetriever, NvidiaReranker, BM25Retriever
 from src.modules.QueryGeneration import QueryHandler, QueryResult
 from src.modules.LLM import create_llm
 from src.utils.Logger import get_logger
@@ -185,13 +185,26 @@ def get_session_query_handler(
         # Get shared reranker
         reranker = _get_shared_reranker()
         
-        # Create retriever with session-specific chunks and reranker
+        # Load session-specific BM25 sparse index
+        bm25_retriever = None
+        try:
+            bm25 = BM25Retriever(store_path=str(vector_store_dir))
+            if bm25.load():
+                bm25_retriever = bm25
+                logger.info(f"[{session_id[:8]}] BM25 sparse index loaded ({len(bm25.chunk_ids)} chunks)")
+            else:
+                logger.info(f"[{session_id[:8]}] No BM25 index found — using dense-only retrieval")
+        except Exception as e:
+            logger.warning(f"[{session_id[:8]}] BM25 load failed, falling back to dense-only: {e}")
+        
+        # Create retriever with session-specific chunks, reranker and sparse index
         retriever = RAGRetriever(
             vector_store=vector_store,
             embedding_service=embedding_service,
             chunks=chunks_metadata,
             reranker=reranker,
-            use_reranker=USE_RERANKER
+            use_reranker=USE_RERANKER,
+            bm25_retriever=bm25_retriever
         )
         
         # Use shared LLM (thread-safe)

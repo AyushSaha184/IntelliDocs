@@ -501,6 +501,9 @@ def ingest_documents_session(
         store_path=str(vector_store_dir),
     )
 
+    from src.modules.Retriever import BM25Retriever
+    bm25_retriever = BM25Retriever(store_path=str(vector_store_dir))
+
     # Split into batches upfront
     batches = [
         all_chunks[i : i + EMBEDDING_BATCH_SIZE]
@@ -535,6 +538,11 @@ def ingest_documents_session(
             vectors=vectors,
             metadata=metadata_list,
             ids=[c.id for c in batch_chunks],
+        )
+        
+        bm25_retriever.add_texts(
+            chunk_ids=[c.id for c in batch_chunks],
+            texts=[c.text for c in batch_chunks]
         )
 
     total_embedded = 0
@@ -598,6 +606,10 @@ def ingest_documents_session(
     # 6. Save vector store
     vector_store.save(str(vector_store_dir))
     logger.info(f"Vector store saved with {total_embedded} vectors")
+
+    bm25_retriever.build()
+    bm25_retriever.save()
+    logger.info("BM25 sparse index built and saved")
 
     elapsed = time.time() - start_time
     docs_per_sec = len(loaded_docs) / elapsed if elapsed > 0 else 0

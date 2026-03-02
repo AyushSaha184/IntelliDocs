@@ -4,7 +4,7 @@ from typing import Optional
 from pathlib import Path
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.Retriever import RAGRetriever, NvidiaReranker
+from src.modules.Retriever import RAGRetriever, NvidiaReranker, BM25Retriever
 from src.modules.QueryGeneration import QueryHandler, QueryResult
 from src.modules.LLM import create_llm
 from src.utils.Logger import get_logger
@@ -121,12 +121,25 @@ def get_query_handler() -> QueryHandler:
     # Initialize reranker if enabled
     reranker = _create_reranker()
 
+    # Load BM25 sparse index
+    bm25_retriever = None
+    try:
+        bm25 = BM25Retriever(store_path="data/vector_store")
+        if bm25.load():
+            bm25_retriever = bm25
+            logger.info(f"BM25 sparse index loaded ({len(bm25.chunk_ids)} chunks)")
+        else:
+            logger.info("No BM25 index found — using dense-only retrieval")
+    except Exception as e:
+        logger.warning(f"BM25 load failed, falling back to dense-only: {e}")
+
     retriever = RAGRetriever(
         vector_store=vector_store,
         embedding_service=embedding_service,
         chunks=chunks_metadata,
         reranker=reranker,
-        use_reranker=USE_RERANKER
+        use_reranker=USE_RERANKER,
+        bm25_retriever=bm25_retriever
     )
 
     llm = None
