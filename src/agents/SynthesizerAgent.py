@@ -95,40 +95,101 @@ class SynthesizerAgent(BaseAgent):
 
         trace.append(f"Synthesizing from {len(all_chunks)} context chunks")
 
-        # Create prompt and generate
-        prompt = llm.create_rag_prompt(
-            query=task.query,
-            context=context,
-            system_prompt=self.SYSTEM_PROMPT,
-        )
-
-        try:
+        # Use cache-friendly message format if LLM supports it, else fallback
+        if hasattr(llm, "create_rag_prompt_messages"):
+            messages = llm.create_rag_prompt_messages(
+                query=task.query,
+                context=context,
+                system_prompt=self.SYSTEM_PROMPT,
+            )
+            try:
+                response = llm.generate(task.query, temperature=0.3, messages=messages)
+            except Exception:
+                prompt = llm.create_rag_prompt(
+                    query=task.query, context=context, system_prompt=self.SYSTEM_PROMPT
+                )
+                response = llm.generate(prompt, temperature=0.3)
+        else:
+            prompt = llm.create_rag_prompt(
+                query=task.query,
+                context=context,
+                system_prompt=self.SYSTEM_PROMPT,
+            )
             response = llm.generate(prompt, temperature=0.3)
 
-            # Strip reasoning blocks from logic-heavy models
-            answer = re.sub(r'<think>.*?</think>', '', response.response, flags=re.DOTALL).strip()
+        # Strip reasoning blocks from logic-heavy models
+        answer = re.sub(r'<think>.*?</think>', '', response.response, flags=re.DOTALL).strip()
 
-            trace.append(f"Generated answer ({response.total_tokens} tokens)")
-            elapsed_ms = (time.time() - self._start_time) * 1000 if self._start_time else 0
-            logger.info(
-                f"[synthesizer] DONE in {elapsed_ms:.0f}ms: "
-                f"{len(all_chunks)} chunks, {response.total_tokens} tokens, answer_len={len(answer)}"
-            )
+        trace.append(f"Generated answer ({response.total_tokens} tokens)")
+        elapsed_ms = (time.time() - self._start_time) * 1000 if self._start_time else 0
+        logger.info(
+            f"[synthesizer] DONE in {elapsed_ms:.0f}ms: "
+            f"{len(all_chunks)} chunks, {response.total_tokens} tokens, answer_len={len(answer)}"
+        )
 
-            return AgentResult(
-                answer=answer,
-                sources=all_sources,
-                confidence=0.8,  # Will be adjusted by ValidatorAgent
-                reasoning_trace=trace,
-                retrieved_chunks=all_chunks,
-            )
+        return AgentResult(
+            answer=answer,
+            sources=all_sources,
+            confidence=0.8,  # Will be adjusted by ValidatorAgent
+            reasoning_trace=trace,
+            retrieved_chunks=all_chunks,
+        )
 
-        except Exception as e:
-            trace.append(f"Synthesis failed: {e}")
-            logger.error(f"[synthesizer] FAILED: {e}", exc_info=True)
-            return AgentResult(
-                answer="",
-                confidence=0.0,
-                reasoning_trace=trace,
-                error=str(e),
+    def run_stream(self, task: AgentTask):
+        """Stream synthesized answer tokens.
+
+        Yields:
+            tuple[str, any]:
+                ("chunk", token_str)       — a token delta from the LLM
+                ("sources", list)          — source list, emitted once at the end
+                ("all_chunks", list)       — raw retrieved chunks for validation
+        """
+        self._start_timer()
+        logger.info(f"[synthesizer:stream] START query='{task.query[:80]}'")
+
+        llm = get_shared_llm()
+        if not llm or not hasattr(llm, "generate_stream"):
+            # Fallback: run non-streaming and emit the whole answer as one chunk
+            result = self.run(task)
+            yield ("chunk", result.answer)
+            yield ("sources", result.sources)
+            yield ("all_chunks", result.retrieved_chunks)
+            return
+
+        all_chunks = []
+        all_sources = []
+        for prev in task.previous_results:
+            all_chunks.extend(prev.retrieved_chunks)
+            all_sources.extend(prev.sources)
+        if task.context:
+            all_chunks.insert(0, task.context)
+
+        if not all_chunks:
+            yield ("chunk", "I don't have enough context to answer this question.")
+            yield ("sources", [])
+            yield ("all_chunks", [])
+            return
+
+        context_parts = [f"[Context {i}]\n{c}" for i, c in enumerate(all_chunks, 1)]
+        context = "\n\n".join(context_parts)
+
+        if hasattr(llm, "create_rag_prompt_messages"):
+            messages = llm.create_rag_prompt_messages(
+                query=task.query,
+                context=context,
+                system_prompt=self.SYSTEM_PROMPT,
             )
+            token_gen = llm.generate_stream(task.query, temperature=0.3, messages=messages)
+        else:
+            prompt = llm.create_rag_prompt(
+                query=task.query, context=context, system_prompt=self.SYSTEM_PROMPT
+            )
+            token_gen = llm.generate_stream(prompt, temperature=0.3)
+
+        for token in token_gen:
+            yield ("chunk", token)
+
+        yield ("sources", all_sources)
+        yield ("all_chunks", all_chunks)
+        logger.info(f"[synthesizer:stream] DONE")
+

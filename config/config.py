@@ -65,10 +65,15 @@ EMBEDDING_TASK_TYPE = _env("EMBEDDING_TASK_TYPE", "RETRIEVAL_DOCUMENT")
 EMBEDDING_DIMENSION = int(_env("EMBEDDING_DIMENSION", "1024"))
 
 # LLM configuration (now using Google Gemini)
-LLM_PROVIDER = _env("LLM_PROVIDER", "gemini")
-LLM_MODEL = _env("LLM_MODEL", "gemini-2.5-flash")
+LLM_PROVIDER = _env("LLM_PROVIDER", "openrouter")
+LLM_MODEL = _env("LLM_MODEL", "openai/gpt-oss-120b:free")
 LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", "0.7"))
 LLM_MAX_TOKENS = int(_env("LLM_MAX_TOKENS", "1000"))
+
+# Judge LLM configuration (for evaluation/validation)
+JUDGE_PROVIDER = _env("JUDGE_PROVIDER", "cerebras")
+JUDGE_MODEL = _env("JUDGE_MODEL", "llama3.1-8b")
+CEREBRAS_API_KEY = _env("CEREBRAS_API_KEY", "")
 
 # PostgreSQL Database configuration
 POSTGRES_HOST = _env("POSTGRES_HOST", "localhost")

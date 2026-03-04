@@ -10,7 +10,7 @@ Guardrails:
 import re
 import time
 from src.agents.BaseAgent import BaseAgent, AgentTask, AgentResult
-from src.utils.llm_provider import get_shared_llm
+from src.utils.llm_provider import get_judge_llm
 from src.utils.Logger import get_logger
 
 logger = get_logger(__name__)
@@ -90,7 +90,7 @@ class ValidatorAgent(BaseAgent):
             )
             return result
 
-        llm = get_shared_llm()
+        llm = get_judge_llm()
         if not llm:
             # Can't validate without LLM — pass through with moderate confidence
             trace.append("No LLM available for validation, passing through")

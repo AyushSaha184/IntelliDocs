@@ -57,7 +57,7 @@ services:
       - key: LLM_PROVIDER
         value: openrouter
       - key: LLM_MODEL
-        value: nvidia/nemotron-3-nano-30b-a3b:free
+        value: openai/gpt-oss-120b:free
       - key: LLM_TEMPERATURE
         value: "0.7"
       - key: LLM_MAX_TOKENS
@@ -66,6 +66,13 @@ services:
         sync: false  # Set this manually in Render dashboard
       - key: NVIDIA_API_KEY
         sync: false  # REQUIRED — set in Render dashboard (used for embeddings & reranking)
+      # Judge LLM Configuration
+      - key: JUDGE_PROVIDER
+        value: cerebras
+      - key: JUDGE_MODEL
+        value: llama3.1-8b
+      - key: CEREBRAS_API_KEY
+        sync: false # Set in Render dashboard
       - key: OPENROUTER_SITE_URL
         value: https://rag-assistant.onrender.com
       - key: OPENROUTER_SITE_NAME

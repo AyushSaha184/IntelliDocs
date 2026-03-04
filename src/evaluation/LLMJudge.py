@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Optional, List
-from src.utils.llm_provider import get_shared_llm
+from src.utils.llm_provider import get_judge_llm
 from src.utils.Logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,7 +72,7 @@ class LLMJudge:
         Returns:
             EvalScore, or None if evaluation fails.
         """
-        llm = get_shared_llm()
+        llm = get_judge_llm()
         if not llm:
             logger.warning("LLMJudge: No LLM available, skipping evaluation")
             return None

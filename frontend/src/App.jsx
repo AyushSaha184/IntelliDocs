@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ChatMessage from './components/ChatMessage';
 import ChatInput from './components/ChatInput';
-import { uploadDocument, checkStatus, askQuestion, processSession } from './services/api';
+import { uploadDocument, checkStatus, askQuestionStream, processSession } from './services/api';
 
 export default function App() {
     const [messages, setMessages] = useState([]);
@@ -20,30 +20,76 @@ export default function App() {
         if (!text.trim() || isGenerating || !isProcessed || !sessionId) return;
 
         const userMessage = { role: 'user', content: text, timestamp: Date.now() };
-        // Remove the 'files processed' success banner when user starts chatting
         setMessages(prev => [...prev.filter(m => !(m.role === 'system' && m.isSuccess)), userMessage]);
-
         setIsGenerating(true);
 
-        try {
-            const data = await askQuestion(sessionId, text);
+        // Insert a placeholder assistant message that we will update token-by-token
+        const msgId = Date.now();
+        setMessages(prev => [...prev, {
+            role: 'assistant',
+            id: msgId,
+            content: '',
+            timestamp: msgId,
+            isStreaming: true,
+            verifying: true,
+            sources: [],
+        }]);
 
-            const assistantMessage = {
-                role: 'assistant',
-                content: data.answer,
-                timestamp: Date.now(),
-                sources: data.retrieved_chunks || []
-            };
-            setMessages(prev => [...prev, assistantMessage]);
+        const updateMsg = (patch) =>
+            setMessages(prev => prev.map(m => m.id === msgId ? { ...m, ...patch } : m));
+
+        try {
+            await askQuestionStream(
+                sessionId,
+                text,
+                {},
+                // onChunk — append token to the message
+                (token) => {
+                    setMessages(prev => prev.map(m =>
+                        m.id === msgId ? { ...m, content: m.content + token } : m
+                    ));
+                },
+                // onMeta — attach sources
+                (meta) => updateMsg({ sources: meta.sources || [] }),
+                // onSuccess — mark verified
+                (result) => {
+                    updateMsg({
+                        isStreaming: false,
+                        verifying: false,
+                        grounded: result.grounded,
+                        confidence: result.confidence,
+                    });
+                    setIsGenerating(false);
+                },
+                // onWarning — redact the message
+                (result) => {
+                    updateMsg({
+                        content: '⚠️ Verification failed. This response was removed for safety.',
+                        isStreaming: false,
+                        verifying: false,
+                        isError: true,
+                        grounded: false,
+                    });
+                    setIsGenerating(false);
+                },
+                // onError
+                (err) => {
+                    updateMsg({
+                        content: `Error: ${err}`,
+                        isStreaming: false,
+                        verifying: false,
+                        isError: true,
+                    });
+                    setIsGenerating(false);
+                },
+            );
         } catch (error) {
-            const errorMessage = {
-                role: 'assistant',
+            updateMsg({
                 content: `Error: ${error.message}`,
-                timestamp: Date.now(),
-                isError: true
-            };
-            setMessages(prev => [...prev, errorMessage]);
-        } finally {
+                isStreaming: false,
+                verifying: false,
+                isError: true,
+            });
             setIsGenerating(false);
         }
     };

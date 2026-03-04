@@ -1,6 +1,6 @@
 # IntelliDocs - Enterprise-Scale RAG Assistant
 
-IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system that turns local document repositories into interactive knowledge bases. It features a **Multi-Agent Orchestration Pipeline** that routes every query through a Planner → Router → Retriever → Synthesizer → Validator chain, a **Hybrid Search Pipeline** combining dense vector search, BM25 sparse retrieval, and Reciprocal Rank Fusion — with optional NVIDIA neural reranking — and a **Human-in-the-Loop Review System** that automatically escalates low-confidence or sensitive answers for human correction.
+IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system that turns local document repositories into interactive knowledge bases. It features a **Multi-Agent Orchestration Pipeline** that routes every query through a Planner → Router → Retriever → Synthesizer → Validator chain, a **Low-Latency Streaming Pipeline** with asynchronous post-stream safety validation, a **Hybrid Search Pipeline** combining dense vector search and BM25 sparse retrieval, and a **Human-in-the-Loop Review System** for high-confidence deployments.
 
 **[🚀 Live Demo](https://enterprise-ai-assistant-rn3m.onrender.com)**
 
@@ -58,8 +58,8 @@ Specialized for:
 - **QueryPlanner**: Uses the LLM to classify every query into one of six types — `trivial`, `factual`, `summarization`, `analytical`, `comparative`, `multi_hop` — and decomposes multi-hop queries into sub-queries. Falls back to a heuristic classifier when the LLM is unavailable.
 - **ConditionalRouter**: Routes the plan to the fastest viable execution path: `DIRECT_LLM` (trivial — no retrieval), `SINGLE_AGENT` (factual/summarization), `MULTI_AGENT` (analytical/comparative/multi-hop), or `HUMAN_REVIEW` (low confidence).
 - **RetrieverAgent**: Wraps the hybrid RAG retriever for use inside the agent pipeline; checks the retrieval cache before calling FAISS+BM25.
-- **SynthesizerAgent**: Builds the full prompt (system prompt + compressed context + query) and calls the LLM to generate an answer.
-- **ValidatorAgent**: Uses a secondary LLM call to verify that the generated answer is grounded in the retrieved context — catches the hallucination failure mode where retrieval quality is low but the LLM still sounds confident.
+- **SynthesizerAgent**: Builds the full prompt (system prompt + compressed context + query) and calls the LLM. Supports **streaming token generation** and provider-specific **KV Caching** (via OpenRouter `cache_control` hints) for drastically lower perceived latency.
+- **ValidatorAgent**: Uses a secondary fast LLM (e.g., Cerebras Llama 3.1) to verify answer groundedness. In streaming mode, this runs **asynchronously post-stream**, redacting the response in the UI if hallucinations are detected after the fact.
 - **Context Compression**: Two-stage compression keeps prompts within `TOKEN_BUDGET`: (1) cheap truncation of least-relevant chunks; (2) LLM summarization only when still >20% over budget after truncation.
 - **Max Agent Steps**: Orchestrator enforces a 5-step cap and a configurable timeout to prevent runaway pipelines.
 - **Human-Approved Answer Cache**: Corrected answers stored by human reviewers are first-checked on every subsequent identical query (with a freshness guard per session).
@@ -97,6 +97,12 @@ Specialized for:
 - **Connection Reuse**: Uses a persistent `requests.Session` to reduce per-request TLS/TCP overhead.
 - **Configurable**: Enable/disable via `USE_RERANKER` env var.
 
+### ⚡ Low-Latency Streaming (New)
+
+- **SSE Pipeline**: End-to-end streaming from the LLM provider (OpenRouter/Cerebras) through the FastAPI backend to the React frontend via Server-Sent Events.
+- **KV Prompt Caching**: Automatically restructures prompts to place static system instructions and retrieval context first, leveraging OpenRouter's KV cache to skip processing of 1000+ repetitive tokens.
+- **Redact-and-Replace Safety**: If the asynchronous `ValidatorAgent` determines a streamed answer is ungrounded, the frontend immediately hides the message and displays a safety warning, preventing users from reading AI hallucinations.
+
 ### ⚡ Parallel Processing Pipeline
 
 - **Three-Stage Streaming**: Document loading (ThreadPoolExecutor) → chunking (ProcessPoolExecutor) → embedding (concurrent API workers), connected by bounded queues for backpressure.
@@ -112,12 +118,14 @@ Specialized for:
 - **Q&A CSV Detection**: Automatically detects query/answer column structures and applies per-row chunking for optimal semantic retrieval.
 - **Table-Aware**: Detects and preserves tables as atomic units within text documents.
 
-### 💾 Two-Tier Query Cache
+### 💾 Four-Level Caching
 
-| Level | What's Cached | Key |
+| Level | What's Cached | Strategy |
 |---|---|---|
-| **Retrieval Cache** | Retrieved chunk sets per query | session + normalized query + top_k |
-| **LLM Cache** | LLM responses per query | session + query hash |
+| **KV Cache** | Prompt Prefix (System+Context) | Provider-side (OpenRouter) ephemeral KV storage |
+| **Retrieval Cache** | Retrieved chunk sets | SQLite: session + normalized query + top_k |
+| **LLM Cache** | Final LLM responses | SQLite: session + query hash |
+| **Human-Approved** | Corrected answers | SQLite: exact query match (High Confidence) |
 
 - All caches are **session-scoped** — no cross-user pollution.
 - Background `CleanupScheduler` evicts stale cache entries on a 10-minute cycle.
@@ -542,8 +550,8 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 | `POST` | `/upload` | Upload a file; returns `session_id` |
 | `GET` | `/status/{session_id}` | Poll ingestion status (`pending` / `processing` / `ready` / `error`) |
 | `POST` | `/process/{session_id}` | Trigger processing of all uploaded files in a session |
-| `POST` | `/ask` | Ask a question; body: `{session_id, question, top_k, system_prompt, temperature, max_tokens}` |
-| `GET` | `/health` | Deep health check (DB, vector store, embedding service) |
+| `POST` | `/health` | Deep health check (DB, vector store, embedding service) |
+| `POST` | `/ask/stream` | **Streamed** answer via SSE; includes metadata and post-stream validation events |
 | `GET` | `/reviews/pending` | List queries pending human review |
 | `POST` | `/reviews/{id}/approve` | Approve the AI-generated answer for a pending review |
 | `POST` | `/reviews/{id}/correct` | Submit a corrected answer for a pending review |
@@ -561,6 +569,7 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 - PostgreSQL (SQLite fallback available for local development)
 - NVIDIA API Key — required for BGE-M3 embeddings; also used for `nv-rerank-qa-mistral-4b:1` reranking
 - OpenRouter API Key — for LLM responses
+- Cerebras API Key — for high-speed post-stream validation (ValidatorAgent)
 - Docker (optional — for containerized deployment)
 - Tesseract (optional — for OCR on scanned PDFs)
 

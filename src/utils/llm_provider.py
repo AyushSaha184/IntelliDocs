@@ -32,6 +32,9 @@ from config.config import (
     LM_STUDIO_BASE_URL,
     LM_STUDIO_API_KEY,
     HF_INFERENCE_PROVIDER,
+    JUDGE_PROVIDER,
+    JUDGE_MODEL,
+    CEREBRAS_API_KEY,
 )
 
 logger = get_logger(__name__)
@@ -40,6 +43,9 @@ logger = get_logger(__name__)
 
 _shared_llm: Optional[BaseLLM] = None
 _llm_lock = threading.Lock()
+
+_shared_judge_llm: Optional[BaseLLM] = None
+_judge_llm_lock = threading.Lock()
 
 _shared_reranker = None
 _reranker_lock = threading.Lock()
@@ -123,6 +129,44 @@ def get_shared_llm() -> Optional[BaseLLM]:
             logger.warning(f"LLM initialization failed: {e}")
 
         return _shared_llm
+
+
+def get_judge_llm() -> Optional[BaseLLM]:
+    """Get or create the judge LLM instance (thread-safe singleton).
+
+    Returns:
+        Shared BaseLLM instance specifically for evaluation/validation.
+    """
+    global _shared_judge_llm
+
+    with _judge_llm_lock:
+        if _shared_judge_llm is not None:
+            return _shared_judge_llm
+
+        try:
+            # We determine the api_key based on the provider.
+            provider_lower = JUDGE_PROVIDER.lower()
+            if provider_lower == "cerebras":
+                api_key = CEREBRAS_API_KEY
+            elif provider_lower in ["gemini", "google"]:
+                api_key = GEMINI_API_KEY
+            elif provider_lower in ["hf", "hf-inference"]:
+                api_key = HF_TOKEN
+            else:
+                api_key = None # will fallback to reading env in factory
+
+            _shared_judge_llm = create_llm(
+                provider=JUDGE_PROVIDER,
+                model_name=JUDGE_MODEL,
+                temperature=0.1,  # Evaluation usually requires low temperature
+                max_tokens=1000,
+                api_key=api_key,
+            )
+            logger.info(f"Shared Judge LLM initialized: {_shared_judge_llm.model_name}")
+        except Exception as e:
+            logger.warning(f"Judge LLM initialization failed: {e}")
+
+        return _shared_judge_llm
 
 
 def get_shared_reranker():

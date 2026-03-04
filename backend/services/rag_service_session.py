@@ -159,3 +159,34 @@ def ask_rag_session(
 def get_llm_status() -> bool:
     """Check if LLM is loaded."""
     return get_shared_llm() is not None
+
+
+def ask_rag_session_stream(
+    session_id: str,
+    question: str,
+    chunks_metadata,
+    vector_store_dir,
+    top_k: int = 5,
+    system_prompt=None,
+    temperature=None,
+    max_tokens=None,
+):
+    """Generator that streams orchestrator events for a session query.
+
+    Yields dicts produced by AgentOrchestrator.run_stream().
+    Each dict has: {"event": str, "data": any}
+    """
+    with _handlers_lock:
+        retriever = _get_session_retriever(session_id, chunks_metadata, vector_store_dir)
+        embedding_service = get_shared_embedding_service()
+
+    yield from _orchestrator.run_stream(
+        query=question,
+        retriever=retriever,
+        embedding_service=embedding_service,
+        session_id=session_id,
+        top_k=top_k,
+        system_prompt=system_prompt,
+        temperature=temperature if temperature is not None else LLM_TEMPERATURE,
+        max_tokens=max_tokens or LLM_MAX_TOKENS,
+    )

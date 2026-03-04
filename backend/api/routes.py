@@ -349,6 +349,55 @@ def ask(query: Query, db: DBSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Ask failed: {str(e)}")
 
 
+@router.post("/ask/stream")
+async def ask_stream(query: Query, db: DBSession = Depends(get_db)):
+    """Stream answer tokens via Server-Sent Events (SSE).
+
+    Returns a text/event-stream response. Each SSE event is a JSON object:
+      data: {"event": "chunk",    "data": "<token>"}
+      data: {"event": "metadata", "data": {sources, retrieval_scores, metadata}}
+      data: {"event": "success",  "data": {grounded, confidence}}
+      data: {"event": "warning",  "data": {grounded, confidence, message}}
+      data: {"event": "error",    "data": "<error message>"}
+    """
+    from fastapi.responses import StreamingResponse as _SR
+    import json as _json
+    from backend.services.rag_service_session import ask_rag_session_stream
+
+    session_manager = get_session_manager()
+    session = session_manager.get_session(query.session_id, db)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != "ready":
+        raise HTTPException(status_code=400, detail=f"Session not ready: {session.status}")
+    if not get_llm_status():
+        raise HTTPException(status_code=503, detail="LLM not initialized")
+
+    chunks_metadata = session_manager.load_chunks_metadata(query.session_id)
+    vector_store_dir = session_manager.get_vector_store_dir(query.session_id)
+
+    def _event_generator():
+        try:
+            for event_dict in ask_rag_session_stream(
+                session_id=query.session_id,
+                question=query.question,
+                chunks_metadata=chunks_metadata,
+                vector_store_dir=vector_store_dir,
+                top_k=query.top_k,
+                system_prompt=query.system_prompt,
+                temperature=query.temperature,
+                max_tokens=query.max_tokens,
+            ):
+                yield f"data: {_json.dumps(event_dict)}\n\n"
+        except Exception as e:
+            logger.error(f"[stream] Unhandled error: {e}", exc_info=True)
+            yield f"data: {_json.dumps({'event': 'error', 'data': str(e)})}\n\n"
+
+    return _SR(_event_generator(), media_type="text/event-stream")
+
+
+
+
 @router.get("/health")
 def health(db: DBSession = Depends(get_db)):
     """Deep health check endpoint validating system components."""

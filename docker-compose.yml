@@ -42,9 +42,14 @@ services:
 
       # LLM: use OpenRouter as default
       LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
-      LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3-nano-30b-a3b:free}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-120b:free}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+
+      # Judge LLM: use Cerebras
+      JUDGE_PROVIDER: ${JUDGE_PROVIDER:-cerebras}
+      JUDGE_MODEL: ${JUDGE_MODEL:-llama3.1-8b}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
 
       # Python
       PYTHONPATH: /app

@@ -276,6 +276,146 @@ class AgentOrchestrator:
 
         return result
 
+    def run_stream(
+        self,
+        query: str,
+        retriever,
+        embedding_service,
+        session_id: str = "",
+        top_k: int = 5,
+        system_prompt=None,
+        temperature=None,
+        max_tokens=None,
+    ):
+        """Streaming version of run().
+
+        Yields SSE-compatible dicts. Retrieval + planning are performed
+        synchronously first (they are fast). Synthesis is streamed token-by-
+        token. Validation runs *after* the last token and emits a final event.
+
+        Yields:
+            dict with keys:
+                event: "chunk" | "metadata" | "success" | "warning" | "error"
+                data:  event payload (str or dict)
+        """
+        import time as _time
+
+        start_time = _time.time()
+        logger.info(f"[orchestrator:stream] START session={session_id[:8]} query='{query[:80]}'")
+
+        if len(query) > self.MAX_QUERY_CHARS:
+            query = query[:self.MAX_QUERY_CHARS] + "... [query truncated for safety]"
+
+        # 1. Plan
+        plan = self.planner.plan(query, top_k)
+
+        # 2. Route
+        route = self.router.route(plan)
+        effective_k = route.adjusted_top_k or top_k
+        operative_query = plan.decomposed_queries[0] if plan and plan.decomposed_queries else query
+
+        if route.decision.value == "direct_llm":
+            # For trivial queries just emit the answer as a single chunk (no streaming needed)
+            result = self._handle_trivial(operative_query, session_id)
+            yield {"event": "chunk", "data": result.llm_response or ""}
+            yield {"event": "success", "data": {"grounded": True, "confidence": 1.0}}
+            return
+
+        # 3. Retrieval (always synchronous — fast NN lookup)
+        task = AgentTask(
+            query=operative_query, top_k=effective_k,
+            session_id=session_id, retriever=retriever,
+        )
+        retrieval_result = self.retriever_agent.run(task)
+
+        if retrieval_result.error or not retrieval_result.retrieved_chunks:
+            yield {"event": "error", "data": "I couldn't find relevant information to answer this question."}
+            return
+
+        # Emit metadata (sources) before text starts so UI can show them early
+        yield {
+            "event": "metadata",
+            "data": {
+                "sources": retrieval_result.sources,
+                "retrieval_scores": retrieval_result.retrieval_scores,
+                "metadata": retrieval_result.metadata,
+            },
+        }
+
+        self._cache_retrieval(session_id, query, top_k, retrieval_result)
+
+        # Context compression (cheap truncation only — no LLM overhead in stream path)
+        char_budget = self.TOKEN_BUDGET * 4
+        compressed = self._compress_context(retrieval_result.retrieved_chunks, char_budget)
+        retrieval_result.retrieved_chunks = compressed
+
+        # 4. Stream synthesis
+        synth_task = AgentTask(
+            query=query,
+            previous_results=[retrieval_result],
+            session_id=session_id,
+        )
+
+        accumulated_answer = []
+        accumulated_chunks = []
+        accumulated_sources = []
+
+        for event_type, payload in self.synthesizer_agent.run_stream(synth_task):
+            if event_type == "chunk":
+                accumulated_answer.append(payload)
+                yield {"event": "chunk", "data": payload}
+            elif event_type == "sources":
+                accumulated_sources = payload
+            elif event_type == "all_chunks":
+                accumulated_chunks = payload
+
+        full_answer = "".join(accumulated_answer)
+
+        # 5. Post-stream validation via Judge LLM
+        logger.info(f"[orchestrator:stream] Validating answer ({len(full_answer)} chars)")
+        synth_result_for_validation = type("_R", (), {
+            "answer": full_answer,
+            "retrieved_chunks": accumulated_chunks,
+            "sources": accumulated_sources,
+            "confidence": 0.8,
+            "retrieval_scores": retrieval_result.retrieval_scores,
+            "metadata": retrieval_result.metadata,
+        })()
+
+        try:
+            validate_task = AgentTask(
+                query=query,
+                previous_results=[synth_result_for_validation],
+                session_id=session_id,
+            )
+            validation_result = self.validator_agent.run(validate_task)
+
+            if validation_result.grounded is False:
+                logger.warning(f"[orchestrator:stream] Validation FAILED — emitting warning")
+                yield {
+                    "event": "warning",
+                    "data": {
+                        "grounded": False,
+                        "confidence": validation_result.confidence,
+                        "message": "Verification failed. This response was removed for safety.",
+                    },
+                }
+            else:
+                yield {
+                    "event": "success",
+                    "data": {
+                        "grounded": validation_result.grounded,
+                        "confidence": validation_result.confidence,
+                    },
+                }
+        except Exception as e:
+            logger.error(f"[orchestrator:stream] Validation error: {e}")
+            # On validator error, still mark as success so the user isn't blocked
+            yield {"event": "success", "data": {"grounded": None, "confidence": 0.7}}
+
+        elapsed = _time.time() - start_time
+        logger.info(f"[orchestrator:stream] DONE in {elapsed:.2f}s")
+
     def _handle_multi_agent(
         self, query, plan, retriever, session_id, top_k,
         system_prompt, temperature, max_tokens, start_time,

@@ -1,5 +1,6 @@
 # LLM & RAG Framework
 openai
+cerebras_cloud_sdk
 
 # Vector Stores
 faiss-cpu
