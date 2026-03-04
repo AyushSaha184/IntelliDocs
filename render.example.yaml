@@ -57,7 +57,7 @@ services:
       - key: LLM_PROVIDER
         value: openrouter
       - key: LLM_MODEL
-        value: openai/gpt-oss-120b:free
+        value: qwen/qwen3-235b-a22b-thinking-2507
       - key: LLM_TEMPERATURE
         value: "0.7"
       - key: LLM_MAX_TOKENS
