@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.modules.Chunking import TextChunker
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
+from src.modules.PgVectorStore import PGVectorSessionStore
 from src.utils.Logger import get_logger
 from config.config import (
     EMBEDDING_PROVIDER,
@@ -38,11 +39,8 @@ from config.config import (
     NVIDIA_API_KEY,
     LM_STUDIO_BASE_URL,
     LM_STUDIO_API_KEY,
-    POSTGRES_HOST,
-    POSTGRES_PORT,
-    POSTGRES_DB,
-    POSTGRES_USER,
-    POSTGRES_PASSWORD,
+    VECTOR_BACKEND,
+    postgres_connect_kwargs,
 )
 
 # Import backend-specific utilities from the consolidated Loader module
@@ -236,14 +234,7 @@ def _load_single_file(file_path: Path, session_id: str) -> Tuple[str, str, str]:
         file_size = os.path.getsize(str(file_path))
         
         try:
-            conn = psycopg2.connect(
-                host=POSTGRES_HOST,
-                port=POSTGRES_PORT,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD,
-                connect_timeout=10
-            )
+            conn = psycopg2.connect(**postgres_connect_kwargs(connect_timeout=10))
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO documents 
@@ -273,10 +264,7 @@ def _load_single_file(file_path: Path, session_id: str) -> Tuple[str, str, str]:
         logger.error(f"Failed to load {file_name}: {e}")
         # Log failure state to Database if possible
         try:
-            conn = psycopg2.connect(
-                host=POSTGRES_HOST, port=POSTGRES_PORT, database=POSTGRES_DB,
-                user=POSTGRES_USER, password=POSTGRES_PASSWORD, connect_timeout=10
-            )
+            conn = psycopg2.connect(**postgres_connect_kwargs(connect_timeout=10))
             with conn.cursor() as cursor:
                  cursor.execute("""
                     INSERT INTO documents 
@@ -507,11 +495,20 @@ def ingest_documents_session(
     )
 
     dimension = embedding_service.model.dimension
-    vector_store = FAISSVectorStore(
-        dimension=dimension,
-        index_type="flat",
-        store_path=str(vector_store_dir),
-    )
+    use_pgvector = VECTOR_BACKEND == "pgvector"
+    if use_pgvector:
+        logger.info(f"[{session_id[:8]}] Using pgvector backend")
+        vector_store = PGVectorSessionStore(
+            session_id=session_id,
+            embedding_dimension=dimension,
+        )
+    else:
+        logger.info(f"[{session_id[:8]}] Using FAISS backend")
+        vector_store = FAISSVectorStore(
+            dimension=dimension,
+            index_type="flat",
+            store_path=str(vector_store_dir),
+        )
 
     from src.modules.Retriever import BM25Retriever
     bm25_retriever = BM25Retriever(store_path=str(vector_store_dir))
@@ -532,11 +529,12 @@ def ingest_documents_session(
         results = _embed_with_retry(embedding_service, texts)
         return batch_chunks, results
 
-    def _write_to_faiss(batch_chunks, embedding_results):
-        """Write one completed batch to FAISS. Always called from the main thread."""
+    def _write_vectors(batch_chunks, embedding_results):
+        """Write one completed embedding batch to the configured vector backend."""
         vectors = [r.embedding for r in embedding_results]
         metadata_list = [
             {
+                "session_id":    session_id,
                 "document_id":   chunk.metadata.document_id,
                 "chunk_id":      chunk.id,
                 "text":          chunk.text,
@@ -577,7 +575,7 @@ def ingest_documents_session(
                 idx = future_to_idx[future]
                 try:
                     batch_chunks, embedding_results = future.result()
-                    _write_to_faiss(batch_chunks, embedding_results)  # serial FAISS write
+                    _write_vectors(batch_chunks, embedding_results)
                     total_embedded += len(batch_chunks)
                     logger.debug(
                         f"[{session_id[:8]}] Embedded batch {idx + 1}/{num_batches}: "
@@ -598,7 +596,7 @@ def ingest_documents_session(
         for idx, batch in enumerate(batches):
             try:
                 batch_chunks, embedding_results = _embed_one_batch(batch)
-                _write_to_faiss(batch_chunks, embedding_results)
+                _write_vectors(batch_chunks, embedding_results)
                 total_embedded += len(batch)
                 logger.debug(
                     f"[{session_id[:8]}] Embedded batch {idx + 1}/{num_batches}: "
@@ -615,9 +613,12 @@ def ingest_documents_session(
     logger.info(f"Added {total_embedded} vectors to store")
     logger.info(f"Step 3: Generated {total_embedded} embeddings in {step_times['embed']:.2f}s")
 
-    # 6. Save vector store
-    vector_store.save(str(vector_store_dir))
-    logger.info(f"Vector store saved with {total_embedded} vectors")
+    # 6. Save vector store (FAISS requires explicit save; pgvector is persisted on write)
+    if hasattr(vector_store, "save"):
+        vector_store.save(str(vector_store_dir))
+        logger.info(f"Vector store saved with {total_embedded} vectors")
+    else:
+        logger.info(f"pgvector rows upserted: {total_embedded}")
 
     bm25_retriever.build()
     bm25_retriever.save()

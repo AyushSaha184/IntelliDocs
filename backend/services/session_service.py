@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session as DBSession
 from backend.database.models import Session, get_db
+from backend.services.storage_service import create_session_storage
 from src.utils.Logger import get_logger
 import threading
 import json
@@ -44,8 +45,9 @@ class SessionManager:
         self.BASE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
         self.CENTRAL_DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._storage = create_session_storage(self.BASE_STORAGE_DIR)
     
-    def create_session(self, filename: str, file_size: int, db: DBSession) -> str:
+    def create_session(self, filename: str, file_size: int, db: DBSession, user_id: Optional[str] = None) -> str:
         """Create a new isolated session with its own document storage."""
         session_id = str(uuid.uuid4())
         
@@ -59,6 +61,7 @@ class SessionManager:
         # Create database record
         session = Session(
             session_id=session_id,
+            user_id=user_id,
             filename=filename,
             file_size=file_size,
             status="processing",
@@ -71,9 +74,12 @@ class SessionManager:
         logger.info(f"Created session {session_id} for file {filename}")
         return session_id
     
-    def get_session(self, session_id: str, db: DBSession) -> Optional[Session]:
+    def get_session(self, session_id: str, db: DBSession, user_id: Optional[str] = None) -> Optional[Session]:
         """Retrieve session from database."""
-        session = db.query(Session).filter(Session.session_id == session_id).first()
+        query = db.query(Session).filter(Session.session_id == session_id)
+        if user_id is not None:
+            query = query.filter(Session.user_id == user_id)
+        session = query.first()
         if session:
             # Update last accessed time
             session.last_accessed = datetime.utcnow()
@@ -106,7 +112,25 @@ class SessionManager:
     
     def get_documents_dir(self, session_id: str) -> Path:
         """Get session-isolated documents directory (prevents cross-user mixup)."""
-        return self._get_session_dir(session_id) / "documents"
+        docs_dir = self._get_session_dir(session_id) / "documents"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        return docs_dir
+
+    def save_uploaded_file(self, session_id: str, filename: str, content: bytes):
+        """Persist uploaded file using configured storage backend."""
+        self._storage.save_document(session_id, filename, content)
+
+    def document_exists(self, session_id: str, filename: str) -> bool:
+        """Check whether a document already exists for this session."""
+        return self._storage.document_exists(session_id, filename)
+
+    def prepare_documents_for_processing(self, session_id: str) -> Path:
+        """Ensure session documents are present on local disk for ingestion."""
+        docs_dir = self.get_documents_dir(session_id)
+        downloaded = self._storage.materialize_documents(session_id, docs_dir)
+        if downloaded == 0:
+            logger.warning(f"No documents found for session {session_id}")
+        return docs_dir
     
     def get_central_documents_dir(self) -> Path:
         """Get central documents directory for main CLI pipeline."""
@@ -144,19 +168,7 @@ class SessionManager:
         Returns:
             List of dicts with 'name', 'size', and 'path' keys
         """
-        docs_dir = self.get_documents_dir(session_id)
-        if not docs_dir.exists():
-            return []
-        
-        files = []
-        for f in docs_dir.iterdir():
-            if f.is_file():
-                files.append({
-                    "name": f.name,
-                    "size": f.stat().st_size,
-                    "path": str(f),
-                })
-        return files
+        return self._storage.list_documents(session_id)
     
     def save_chunks_metadata(self, session_id: str, metadata: Dict[str, Any]):
         """Save chunk metadata for a session."""
@@ -190,6 +202,7 @@ class SessionManager:
                 db.commit()
             
             # Delete storage
+            self._storage.delete_session(session_id)
             session_dir = self._get_session_dir(session_id)
             if session_dir.exists():
                 shutil.rmtree(session_dir)

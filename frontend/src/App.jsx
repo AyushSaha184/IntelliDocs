@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import ChatMessage from './components/ChatMessage';
 import ChatInput from './components/ChatInput';
 import { uploadDocument, checkStatus, askQuestionStream, processSession } from './services/api';
+import { supabase } from './services/supabase';
 
 export default function App() {
     const [messages, setMessages] = useState([]);
@@ -10,11 +11,59 @@ export default function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [isProcessed, setIsProcessed] = useState(false);
     const [sessionId, setSessionId] = useState(null);
+    const [user, setUser] = useState(null);
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [authError, setAuthError] = useState('');
+    const [authLoading, setAuthLoading] = useState(false);
     const messagesEndRef = useRef(null);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
+
+    useEffect(() => {
+        if (!supabase) return;
+
+        let mounted = true;
+        supabase.auth.getSession().then(({ data }) => {
+            if (!mounted) return;
+            setUser(data?.session?.user || null);
+        });
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            setUser(session?.user || null);
+        });
+
+        return () => {
+            mounted = false;
+            subscription.unsubscribe();
+        };
+    }, []);
+
+    const handleSignIn = async () => {
+        if (!supabase) return;
+        setAuthError('');
+        setAuthLoading(true);
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) setAuthError(error.message);
+        setAuthLoading(false);
+    };
+
+    const handleSignUp = async () => {
+        if (!supabase) return;
+        setAuthError('');
+        setAuthLoading(true);
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) setAuthError(error.message);
+        setAuthLoading(false);
+    };
+
+    const handleSignOut = async () => {
+        if (!supabase) return;
+        await supabase.auth.signOut();
+        handleClear();
+    };
 
     const handleSend = async (text) => {
         if (!text.trim() || isGenerating || !isProcessed || !sessionId) return;
@@ -178,6 +227,49 @@ export default function App() {
         setSessionId(null);
     };
 
+    if (supabase && !user) {
+        return (
+            <div className="relative flex h-screen items-center justify-center overflow-hidden text-[#f5efff]">
+                <div className="glass-panel w-full max-w-md m-3 p-6 rounded-3xl">
+                    <h1 className="text-white font-semibold text-xl mb-4">Sign in to IntelliDocs</h1>
+                    <div className="space-y-3">
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="Email"
+                            className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
+                        />
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder="Password"
+                            className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
+                        />
+                        {authError && <p className="text-red-300 text-xs">{authError}</p>}
+                        <div className="flex gap-2">
+                            <button
+                                onClick={handleSignIn}
+                                disabled={authLoading}
+                                className="flex-1 rounded-xl bg-white/20 px-3 py-2 text-sm text-white hover:bg-white/30"
+                            >
+                                Sign In
+                            </button>
+                            <button
+                                onClick={handleSignUp}
+                                disabled={authLoading}
+                                className="flex-1 rounded-xl bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20"
+                            >
+                                Sign Up
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="relative flex h-screen overflow-hidden text-[#f5efff]">
             <div className="pointer-events-none absolute -top-24 -left-16 h-72 w-72 rounded-full bg-fuchsia-400/20 blur-3xl" />
@@ -227,6 +319,14 @@ export default function App() {
                     >
                         Clear
                     </button>
+                    {supabase && user && (
+                        <button
+                            onClick={handleSignOut}
+                            className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20 ml-2"
+                        >
+                            Sign out
+                        </button>
+                    )}
                 </div>
 
                 <div className="flex-1 overflow-y-auto">

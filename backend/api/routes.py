@@ -7,11 +7,13 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, B
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 from backend.database import get_db
+from backend.auth.supabase_auth import get_current_user, AuthUser
 from backend.services.session_service import get_session_manager, DATA_DIR
 from backend.services.rag_service_session import ask_rag_session, get_llm_status, clear_session_handler
 from backend.rag.IngestSession import ingest_documents_session
 from src.modules.QueryGeneration import QueryResult
 from src.utils.Logger import get_logger
+from config.config import VECTOR_BACKEND
 import asyncio
 
 logger = get_logger(__name__)
@@ -94,7 +96,7 @@ def process_document_async(session_id: str, session_manager):
     
     db = get_session_local()()
     try:
-        documents_dir = session_manager.get_documents_dir(session_id)
+        documents_dir = session_manager.prepare_documents_for_processing(session_id)
         chunks_dir = session_manager.get_chunks_dir(session_id)
         vector_store_dir = session_manager.get_vector_store_dir(session_id)
         
@@ -158,7 +160,8 @@ async def upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session_id: Optional[str] = Form(None),
-    db: DBSession = Depends(get_db)
+    db: DBSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Upload a document to a session.
@@ -200,25 +203,23 @@ async def upload(
         # Use existing session or create new one
         if session_id:
             # Verify session exists
-            session = session_manager.get_session(session_id, db)
+            session = session_manager.get_session(session_id, db, user_id=current_user.id)
             if not session:
                 raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
             # Reset to processing status when adding new files
             session_manager.update_session_status(session_id, "processing", db)
         else:
             # Create new session
-            session_id = session_manager.create_session(file.filename, file_size, db)
-        
-        # Save file to session-isolated directory (prevents cross-user mixup)
-        documents_dir = session_manager.get_documents_dir(session_id)
-        dest_path = documents_dir / file.filename
+            session_id = session_manager.create_session(
+                file.filename, file_size, db, user_id=current_user.id
+            )
         
         # Check if file already exists
-        if dest_path.exists():
+        if session_manager.document_exists(session_id, file.filename):
             raise HTTPException(status_code=400, detail=f"File {file.filename} already exists in this session")
-        
-        with open(dest_path, "wb") as f:
-            f.write(contents)
+
+        # Save file via configured storage backend (local or Supabase Storage)
+        session_manager.save_uploaded_file(session_id, file.filename, contents)
         
         # NOTE: We do NOT copy to central data/documents/ to ensure strict
         # session isolation. Each user's files stay in their own session directory.
@@ -241,10 +242,14 @@ async def upload(
 
 
 @router.get("/status/{session_id}", response_model=SessionStatusResponse)
-def get_status(session_id: str, db: DBSession = Depends(get_db)):
+def get_status(
+    session_id: str,
+    db: DBSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Get the status of a session."""
     session_manager = get_session_manager()
-    session = session_manager.get_session(session_id, db)
+    session = session_manager.get_session(session_id, db, user_id=current_user.id)
     
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -264,14 +269,15 @@ def get_status(session_id: str, db: DBSession = Depends(get_db)):
 async def process_session(
     session_id: str,
     background_tasks: BackgroundTasks,
-    db: DBSession = Depends(get_db)
+    db: DBSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
     """
     Trigger processing of all uploaded documents in a session.
     Called when user clicks 'Process' after uploading all their files.
     """
     session_manager = get_session_manager()
-    session = session_manager.get_session(session_id, db)
+    session = session_manager.get_session(session_id, db, user_id=current_user.id)
     
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -296,13 +302,17 @@ async def process_session(
 
 
 @router.post("/ask", response_model=AskResponse)
-def ask(query: Query, db: DBSession = Depends(get_db)):
+def ask(
+    query: Query,
+    db: DBSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Ask a question about an uploaded document."""
     try:
         session_manager = get_session_manager()
         
         # Validate session
-        session = session_manager.get_session(query.session_id, db)
+        session = session_manager.get_session(query.session_id, db, user_id=current_user.id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         
@@ -350,7 +360,11 @@ def ask(query: Query, db: DBSession = Depends(get_db)):
 
 
 @router.post("/ask/stream")
-async def ask_stream(query: Query, db: DBSession = Depends(get_db)):
+async def ask_stream(
+    query: Query,
+    db: DBSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Stream answer tokens via Server-Sent Events (SSE).
 
     Returns a text/event-stream response. Each SSE event is a JSON object:
@@ -365,7 +379,7 @@ async def ask_stream(query: Query, db: DBSession = Depends(get_db)):
     from backend.services.rag_service_session import ask_rag_session_stream
 
     session_manager = get_session_manager()
-    session = session_manager.get_session(query.session_id, db)
+    session = session_manager.get_session(query.session_id, db, user_id=current_user.id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.status != "ready":
@@ -405,6 +419,7 @@ def health(db: DBSession = Depends(get_db)):
         "status": "ok",
         "llm_loaded": get_llm_status(),
         "database": "unknown",
+        "vector_backend": VECTOR_BACKEND,
         "system_stats": {}
     }
 
@@ -420,13 +435,18 @@ def health(db: DBSession = Depends(get_db)):
 
     # 2. Vector Store File Check
     try:
-        from config.config import DATA_DIR
-        vstore_dir = Path(DATA_DIR) / "vector_store"
-        if vstore_dir.exists():
-            faiss_files = list(vstore_dir.glob("**/index.faiss"))
-            status_report["system_stats"]["total_faiss_indexes"] = len(faiss_files)
+        if VECTOR_BACKEND == "pgvector":
+            from sqlalchemy import text
+            result = db.execute(text("SELECT COUNT(*) FROM chunk_embeddings"))
+            status_report["system_stats"]["total_pgvector_rows"] = int(result.scalar() or 0)
         else:
-            status_report["system_stats"]["total_faiss_indexes"] = 0
+            from backend.services.session_service import DATA_DIR
+            vstore_dir = Path(DATA_DIR) / "vector_store"
+            if vstore_dir.exists():
+                faiss_files = list(vstore_dir.glob("**/index.faiss"))
+                status_report["system_stats"]["total_faiss_indexes"] = len(faiss_files)
+            else:
+                status_report["system_stats"]["total_faiss_indexes"] = 0
     except Exception as e:
         logger.error(f"Healthcheck failed FAISS verification: {e}")
         status_report["status"] = "degraded"
@@ -437,7 +457,10 @@ def health(db: DBSession = Depends(get_db)):
 # ── Phase 4: Human Review Endpoints ────────────────────────────────────
 
 @router.get("/review/pending")
-def get_pending_reviews(limit: int = 50):
+def get_pending_reviews(
+    limit: int = 50,
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Get queries pending human review."""
     from src.agents.HumanValidation import ReviewManager
     manager = ReviewManager()
@@ -445,7 +468,10 @@ def get_pending_reviews(limit: int = 50):
 
 
 @router.post("/review/{review_id}/approve")
-def approve_review(review_id: str):
+def approve_review(
+    review_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Approve a pending review."""
     from src.agents.HumanValidation import ReviewManager
     manager = ReviewManager()
@@ -460,7 +486,11 @@ class CorrectionRequest(BaseModel):
 
 
 @router.post("/review/{review_id}/correct")
-def correct_review(review_id: str, body: CorrectionRequest):
+def correct_review(
+    review_id: str,
+    body: CorrectionRequest,
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Correct a pending review with a human-provided answer."""
     from src.agents.HumanValidation import ReviewManager
     manager = ReviewManager()
@@ -473,7 +503,10 @@ def correct_review(review_id: str, body: CorrectionRequest):
 # ── Phase 5: Evaluation Endpoints ──────────────────────────────────────
 
 @router.get("/eval/summary")
-def get_eval_summary(last_n: Optional[int] = None):
+def get_eval_summary(
+    last_n: Optional[int] = None,
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Get rolling metrics summary."""
     from src.evaluation.Metrics import get_metrics_collector
     collector = get_metrics_collector()
@@ -483,7 +516,10 @@ def get_eval_summary(last_n: Optional[int] = None):
 # ── Phase 6: Stress Test Endpoint ──────────────────────────────────────
 
 @router.post("/stress-test")
-def run_stress_test(session_id: str):
+def run_stress_test(
+    session_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+):
     """Run adversarial stress tests — gated behind ENABLE_STRESS_TEST env flag."""
     import os
     if not os.getenv("ENABLE_STRESS_TEST", "false").lower() == "true":

@@ -50,6 +50,7 @@ except ImportError:
     PSUTIL_AVAILABLE = False
 
 from src.utils.Logger import get_logger
+from config.config import VECTOR_BACKEND
 
 logger = get_logger(__name__)
 
@@ -499,6 +500,7 @@ class ParallelRAGPipeline:
         self,
         documents_dir: str,
         vector_store_dir: str,
+        session_id: str = "cli_build",
         chunk_size: int = 600,
         chunk_overlap: int = 90,
         strategy: str = "fixed_size",
@@ -513,6 +515,7 @@ class ParallelRAGPipeline:
     ):
         self.documents_dir = Path(documents_dir)
         self.vector_store_dir = Path(vector_store_dir)
+        self.session_id = session_id
 
         # Chunker settings (passed to child processes)
         self.chunker_config = {
@@ -553,8 +556,9 @@ class ParallelRAGPipeline:
             **filtered,
         )
 
-        # FAISS index type heuristic
+        # Vector backend initialization (pgvector or FAISS)
         from src.modules.VectorStore import FAISSVectorStore
+        from src.modules.PgVectorStore import PGVectorSessionStore
 
         doc_count = sum(
             1 for p in self.documents_dir.iterdir()
@@ -574,11 +578,18 @@ class ParallelRAGPipeline:
                 f"-> using Flat index (exact search)"
             )
 
-        self.vector_store = FAISSVectorStore(
-            dimension=self.embedding_service.model.dimension,
-            index_type=index_type,
-            store_path=str(self.vector_store_dir),
-        )
+        if VECTOR_BACKEND == "pgvector":
+            logger.info(f"Using pgvector backend for parallel pipeline session '{self.session_id}'")
+            self.vector_store = PGVectorSessionStore(
+                session_id=self.session_id,
+                embedding_dimension=self.embedding_service.model.dimension,
+            )
+        else:
+            self.vector_store = FAISSVectorStore(
+                dimension=self.embedding_service.model.dimension,
+                index_type=index_type,
+                store_path=str(self.vector_store_dir),
+            )
         
         from src.modules.Retriever import BM25Retriever
         self.bm25_retriever = BM25Retriever(store_path=str(self.vector_store_dir))

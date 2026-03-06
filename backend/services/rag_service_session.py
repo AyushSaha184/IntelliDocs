@@ -3,7 +3,9 @@
 from typing import Optional, Dict, Any
 from pathlib import Path
 from src.modules.VectorStore import FAISSVectorStore
+from src.modules.PgVectorStore import PGVectorSessionStore
 from src.modules.Retriever import RAGRetriever
+from src.modules.Retriever import BM25Retriever
 from src.modules.QueryGeneration import QueryHandler, QueryResult
 from src.agents.Orchestrator import AgentOrchestrator
 from src.utils.Logger import get_logger
@@ -16,6 +18,7 @@ from config.config import (
     LLM_TEMPERATURE,
     LLM_MAX_TOKENS,
     USE_RERANKER,
+    VECTOR_BACKEND,
 )
 import threading
 
@@ -48,15 +51,36 @@ def _get_session_retriever(
     logger.info(f"[session] Building retriever for session {session_id[:8]}")
     embedding_service = get_shared_embedding_service()
 
-    vector_store = FAISSVectorStore(
-        dimension=embedding_service.model.dimension,
-        index_type="flat",
-    )
+    bm25_retriever = BM25Retriever(store_path=str(vector_store_dir))
+    bm25_loaded = bm25_retriever.load()
+    if not bm25_loaded:
+        logger.warning(f"[session] BM25 index not loaded for {session_id[:8]} (dense-only fallback)")
 
-    if not vector_store_dir.exists():
-        raise ValueError(f"Vector store not found for session {session_id}")
+    if VECTOR_BACKEND == "pgvector":
+        try:
+            vector_store = PGVectorSessionStore(
+                session_id=session_id,
+                embedding_dimension=embedding_service.model.dimension,
+            )
+        except Exception as e:
+            logger.error(f"[session] pgvector init failed, falling back to FAISS: {e}")
+            vector_store = FAISSVectorStore(
+                dimension=embedding_service.model.dimension,
+                index_type="flat",
+            )
+            if not vector_store_dir.exists():
+                raise ValueError(f"Vector store not found for session {session_id}")
+            vector_store.load(str(vector_store_dir))
+    else:
+        vector_store = FAISSVectorStore(
+            dimension=embedding_service.model.dimension,
+            index_type="flat",
+        )
 
-    vector_store.load(str(vector_store_dir))
+        if not vector_store_dir.exists():
+            raise ValueError(f"Vector store not found for session {session_id}")
+
+        vector_store.load(str(vector_store_dir))
 
     reranker = get_shared_reranker()
 
@@ -66,6 +90,7 @@ def _get_session_retriever(
         chunks=chunks_metadata,
         reranker=reranker,
         use_reranker=USE_RERANKER,
+        bm25_retriever=bm25_retriever if bm25_loaded else None,
     )
 
     _session_retrievers[session_id] = retriever

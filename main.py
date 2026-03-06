@@ -12,7 +12,7 @@ Usage:
     python main.py --build              # Build vector store
     python main.py --query              # Interactive queries
     python main.py --api                # Start API server
-    python main.py --test "query text"  # Test a query
+    python main.py --test-query "query text"  # Test a query
 """
 from typing import Any, Dict, List, Optional
 import sys
@@ -43,6 +43,7 @@ DocumentLoader = DocumentMetadata = load_documents = None
 TextChunker = TextChunk = ChunkingStrategy = create_chunker = None
 create_embedding_service = None
 FAISSVectorStore = None
+PGVectorSessionStore = None
 BM25Retriever = None
 RAGRetriever = NvidiaReranker = None
 QueryHandler = None
@@ -56,6 +57,7 @@ def _load_heavy_imports():
     global TextChunker, TextChunk, ChunkingStrategy, create_chunker
     global create_embedding_service
     global FAISSVectorStore
+    global PGVectorSessionStore
     global RAGRetriever, NvidiaReranker
     global QueryHandler
     global create_llm, BaseLLM
@@ -72,6 +74,8 @@ def _load_heavy_imports():
 
     from src.modules.VectorStore import FAISSVectorStore as _FVS
     FAISSVectorStore = _FVS
+    from src.modules.PgVectorStore import PGVectorSessionStore as _PGVS
+    PGVectorSessionStore = _PGVS
 
     from src.modules.Retriever import BM25Retriever as _BM25
     BM25Retriever = _BM25
@@ -119,6 +123,7 @@ from config.config import (
     RERANKER_MODEL,
     MIN_CHUNKS_TO_RERANK,
     TOP_K_AFTER_RERANK,
+    VECTOR_BACKEND,
 )
 
 logger = get_logger(__name__)
@@ -153,15 +158,19 @@ def clear_postgres_tables():
             WHERE datname = %s AND pid <> pg_backend_pid()
         """, (POSTGRES_DB,))
         
-        # Clear tables in order (respecting foreign keys)
-        tables = ['chunks', 'hash_index', 'processing_log', 'documents']
+        # Clear tables in order (respecting foreign keys where applicable)
+        tables = ['chunk_embeddings', 'chunks', 'hash_index', 'processing_log', 'documents', 'sessions']
         total_deleted = 0
         for table in tables:
-            cursor.execute(f"DELETE FROM {table}")
-            count = cursor.rowcount
-            total_deleted += count
-            if count > 0:
-                logger.debug(f"    Deleted {count} rows from {table}")
+            try:
+                cursor.execute(f"DELETE FROM {table}")
+                count = cursor.rowcount
+                total_deleted += count
+                if count > 0:
+                    logger.debug(f"    Deleted {count} rows from {table}")
+            except Exception:
+                # Table may not exist in some environments.
+                continue
         
         cursor.close()
         conn.close()
@@ -253,6 +262,7 @@ class RAGPipeline:
     
     def __init__(
         self,
+        session_id: str = "cli_build",
         documents_dir: Optional[str] = None,
         chunks_dir: Optional[str] = None,
         vector_store_dir: Optional[str] = None,
@@ -285,6 +295,7 @@ class RAGPipeline:
         self.documents_dir = documents_dir or "data/documents"
         self.chunks_dir = chunks_dir or "data/chunks"
         self.vector_store_dir = vector_store_dir or "data/vector_store"
+        self.session_id = session_id
         
         # Initialize components with database support
         self.document_loader = DocumentLoader(
@@ -312,11 +323,25 @@ class RAGPipeline:
         )
         
         # Initialize vector store with batch support
-        self.vector_store = FAISSVectorStore(
-            dimension=self.embedding_service.model.dimension,
-            index_type=vector_store_type,
-            store_path=self.vector_store_dir
-        )
+        if VECTOR_BACKEND == "pgvector":
+            try:
+                self.vector_store = PGVectorSessionStore(
+                    session_id=self.session_id,
+                    embedding_dimension=self.embedding_service.model.dimension,
+                )
+            except Exception as e:
+                logger.warning(f"pgvector init failed in RAGPipeline, falling back to FAISS: {e}")
+                self.vector_store = FAISSVectorStore(
+                    dimension=self.embedding_service.model.dimension,
+                    index_type=vector_store_type,
+                    store_path=self.vector_store_dir
+                )
+        else:
+            self.vector_store = FAISSVectorStore(
+                dimension=self.embedding_service.model.dimension,
+                index_type=vector_store_type,
+                store_path=self.vector_store_dir
+            )
         
         # Initialize reranker if enabled
         self.reranker = _create_reranker()
@@ -484,6 +509,27 @@ def load_chunks_metadata(chunks_dir: str) -> dict:
     return chunks_metadata
 
 
+def create_cli_vector_store(embedding_service, vector_store_dir: str, session_id: str, index_type: str = "flat"):
+    """Create CLI vector store from configured backend with safe fallback."""
+    if VECTOR_BACKEND == "pgvector":
+        try:
+            logger.info(f"Using pgvector backend for CLI session '{session_id}'")
+            return PGVectorSessionStore(
+                session_id=session_id,
+                embedding_dimension=embedding_service.model.dimension,
+            )
+        except Exception as e:
+            logger.warning(f"pgvector init failed, falling back to FAISS for CLI: {e}")
+
+    vector_store = FAISSVectorStore(
+        dimension=embedding_service.model.dimension,
+        index_type=index_type,
+    )
+    vector_store.load(vector_store_dir)
+    logger.info(f"Loaded FAISS vector store from {vector_store_dir}")
+    return vector_store
+
+
 def run_interactive_query(args):
     """Run interactive query mode"""
     print("\n" + "="*80)
@@ -499,13 +545,13 @@ def run_interactive_query(args):
         )
         logger.info("Embedding service initialized")
         
-        # Load vector store
-        vector_store = FAISSVectorStore(
-            dimension=embedding_service.model.dimension,
-            index_type="flat"
+        # Load vector store (pgvector or FAISS)
+        vector_store = create_cli_vector_store(
+            embedding_service=embedding_service,
+            vector_store_dir=args.vector_store_dir,
+            session_id=args.session_id,
+            index_type="flat",
         )
-        vector_store.load(args.vector_store_dir)
-        logger.info(f"Loaded vector store from {args.vector_store_dir}")
         
         # Load chunks metadata
         chunks = load_chunks_metadata(args.chunks_dir)
@@ -792,6 +838,7 @@ def run_api_server(args):
             # Initialize the full pipeline (Loader, Chunker, Embedder, Store)
             # We reuse the arguments passed to main.py
             pipeline_global = RAGPipeline(
+                session_id=args.session_id,
                 documents_dir=args.documents_dir,
                 chunks_dir=args.chunks_dir,
                 vector_store_dir=args.vector_store_dir,
@@ -982,17 +1029,28 @@ def run_test_query(args):
             model_type=EMBEDDING_PROVIDER,
             **_build_embedding_kwargs(args.device)
         )
-        vector_store = FAISSVectorStore(
-            dimension=embedding_service.model.dimension,
-            index_type="flat"
+        vector_store = create_cli_vector_store(
+            embedding_service=embedding_service,
+            vector_store_dir=args.vector_store_dir,
+            session_id=args.session_id,
+            index_type="flat",
         )
-        vector_store.load(args.vector_store_dir)
         chunks = load_chunks_metadata(args.chunks_dir)
         
         # Initialize reranker if enabled
         reranker = _create_reranker()
         
-        retriever = RAGRetriever(vector_store, embedding_service, chunks, reranker=reranker, use_reranker=USE_RERANKER)
+        bm25_retriever = BM25Retriever(store_path=args.vector_store_dir)
+        if bm25_retriever.load():
+            logger.info("Loaded BM25 sparse index.")
+        retriever = RAGRetriever(
+            vector_store,
+            embedding_service,
+            chunks,
+            reranker=reranker,
+            use_reranker=USE_RERANKER,
+            bm25_retriever=bm25_retriever,
+        )
         
         # Initialize LLM (OpenRouter, Google Gemini, or HuggingFace)
         llm = None
@@ -1091,7 +1149,7 @@ Modes:
   --build --incremental  Incremental build (keep existing data, add new documents only)
   --query                Interactive query interface
   --api                  Start REST API server
-  --test "query"         Test a single query
+  --test-query "query"   Test a single query
 
 Examples:
   python main.py --build                         # Auto-detect best pipeline (clears existing data)
@@ -1100,7 +1158,7 @@ Examples:
   python main.py --query
   python main.py --query --top-k 10 --device cuda
   python main.py --api --api-port 8000
-  python main.py --test "What is machine learning?"
+  python main.py --test-query "What is machine learning?"
   
 Performance:
   Sequential: ~8 docs/sec, 40% CPU, 40% GPU (best for <50 docs)
@@ -1145,6 +1203,12 @@ Note: By default, --build clears existing databases for a fresh rebuild.
     parser.add_argument("--encoding", type=str, default="cl100k_base", help="Tokenizer encoding")
     parser.add_argument("--vector-store-type", type=str, default="flat", 
                        choices=["flat", "ivf", "hnsw"], help="Vector store type")
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        default="cli_build",
+        help="Session id for pgvector-backed CLI build/query/test flows (default: cli_build)",
+    )
     parser.add_argument("--loader-threads", type=int, default=8, help="Number of loader threads for parallel mode (default: 8)")
     parser.add_argument("--chunker-processes", type=int, default=None, help="Number of chunker processes for parallel mode (default: cpu_count)")
     
@@ -1232,7 +1296,7 @@ Note: By default, --build clears existing databases for a fresh rebuild.
             logger.info("Using SEQUENTIAL pipeline (forced by --sequential flag)")
         else:
             logger.info("Using PARALLEL pipeline (forced by --parallel flag)")
-        
+
         if use_parallel:
             # Use high-performance parallel pipeline
             logger.info("PARALLEL PIPELINE mode (optimized CPU/GPU distribution)")
@@ -1250,6 +1314,7 @@ Note: By default, --build clears existing databases for a fresh rebuild.
                 pipeline = ParallelRAGPipeline(
                     documents_dir=args.documents_dir,
                     vector_store_dir=args.vector_store_dir,
+                    session_id=args.session_id,
                     chunk_size=args.chunk_size,
                     chunk_overlap=args.chunk_overlap,
                     strategy=args.strategy,
@@ -1277,7 +1342,7 @@ Note: By default, --build clears existing databases for a fresh rebuild.
             from backend.rag.IngestSession import ingest_documents_session
             
             # Generate a build session ID for logging
-            build_session_id = f"build_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            build_session_id = args.session_id
             
             chunks_count = ingest_documents_session(
                 session_id=build_session_id,
@@ -1349,7 +1414,7 @@ Note: By default, --build clears existing databases for a fresh rebuild.
         logger.info("Using IMPROVED PIPELINE with robust PDF/CSV and retry")
         from backend.rag.IngestSession import ingest_documents_session
         
-        build_session_id = f"build_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        build_session_id = args.session_id
         
         chunks_count = ingest_documents_session(
             session_id=build_session_id,

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 from dotenv import load_dotenv
 
 _env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -76,8 +77,75 @@ JUDGE_MODEL = _env("JUDGE_MODEL", "llama3.1-8b")
 CEREBRAS_API_KEY = _env("CEREBRAS_API_KEY", "")
 
 # PostgreSQL Database configuration
-POSTGRES_HOST = _env("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = int(_env("POSTGRES_PORT", "5432"))
-POSTGRES_DB = _env("POSTGRES_DB", "rag_db")
-POSTGRES_USER = _env("POSTGRES_USER", "postgres")
-POSTGRES_PASSWORD = _env("POSTGRES_PASSWORD", "")
+DATABASE_URL = _env("DATABASE_URL", "")
+
+
+def _parse_database_url(url: str) -> dict:
+    """Parse DATABASE_URL into psycopg2-compatible parts."""
+    if not url:
+        return {}
+    parsed = urlparse(url)
+    if parsed.scheme not in {"postgres", "postgresql"}:
+        return {}
+    return {
+        "host": parsed.hostname or "",
+        "port": parsed.port or 5432,
+        "dbname": (parsed.path or "/").lstrip("/") or "postgres",
+        "user": unquote(parsed.username) if parsed.username else "",
+        "password": unquote(parsed.password) if parsed.password else "",
+    }
+
+
+_db_from_url = _parse_database_url(DATABASE_URL)
+POSTGRES_HOST = _env("POSTGRES_HOST", _db_from_url.get("host", "localhost"))
+POSTGRES_PORT = int(_env("POSTGRES_PORT", str(_db_from_url.get("port", 5432))))
+POSTGRES_DB = _env("POSTGRES_DB", _db_from_url.get("dbname", "rag_db"))
+POSTGRES_USER = _env("POSTGRES_USER", _db_from_url.get("user", "postgres"))
+POSTGRES_PASSWORD = _env("POSTGRES_PASSWORD", _db_from_url.get("password", ""))
+POSTGRES_SSLMODE = _env("POSTGRES_SSLMODE", "require" if "supabase.co" in POSTGRES_HOST else "prefer")
+
+# Vector backend selection
+_raw_vector_backend = _env("VECTOR_BACKEND", "auto").lower()  # "auto" | "faiss" | "pgvector"
+if _raw_vector_backend == "auto":
+    # Prefer pgvector automatically for managed/remote DBs (Supabase), keep FAISS for local DBs.
+    _looks_remote = POSTGRES_HOST not in {"localhost", "127.0.0.1", ""}
+    VECTOR_BACKEND = "pgvector" if _looks_remote else "faiss"
+else:
+    VECTOR_BACKEND = _raw_vector_backend
+PGVECTOR_DISTANCE = _env("PGVECTOR_DISTANCE", "cosine").lower()  # "cosine" | "l2" | "inner"
+PGVECTOR_PROBES = int(_env("PGVECTOR_PROBES", "10"))
+
+# Supabase auth/storage configuration
+SUPABASE_URL = _env("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = _env("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_STORAGE_BUCKET = _env("SUPABASE_STORAGE_BUCKET", "rag-documents")
+
+# API auth behavior
+_raw_auth_required = _env("AUTH_REQUIRED", "auto").lower()  # "auto" | "true" | "false"
+if _raw_auth_required == "auto":
+    AUTH_REQUIRED = bool(SUPABASE_URL and (SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY))
+else:
+    AUTH_REQUIRED = _raw_auth_required == "true"
+
+# CORS configuration
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in _env("CORS_ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+
+
+def postgres_connect_kwargs(connect_timeout: int = 10) -> dict:
+    """Shared psycopg2 kwargs (Supabase-friendly SSL defaults included)."""
+    kwargs = {
+        "host": POSTGRES_HOST,
+        "port": POSTGRES_PORT,
+        "database": POSTGRES_DB,
+        "user": POSTGRES_USER,
+        "password": POSTGRES_PASSWORD,
+        "connect_timeout": connect_timeout,
+    }
+    if POSTGRES_SSLMODE:
+        kwargs["sslmode"] = POSTGRES_SSLMODE
+    return kwargs

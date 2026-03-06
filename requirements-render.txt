@@ -29,6 +29,7 @@ requests
 # Database
 sqlalchemy
 psycopg2-binary
+supabase
 
 # Configuration & Environment
 python-dotenv

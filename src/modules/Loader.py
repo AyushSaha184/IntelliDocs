@@ -28,7 +28,12 @@ except ImportError:
 from src.utils.Logger import get_logger
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from config.config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+from config.config import (
+    POSTGRES_HOST,
+    POSTGRES_PORT,
+    POSTGRES_DB,
+    postgres_connect_kwargs,
+)
 
 logger = get_logger(__name__)
 
@@ -135,14 +140,7 @@ class DocumentLoader:
         """Initialize PostgreSQL database for metadata storage"""
         try:
             # Connect to PostgreSQL
-            conn = psycopg2.connect(
-                host=POSTGRES_HOST,
-                port=POSTGRES_PORT,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD,
-                connect_timeout=10
-            )
+            conn = psycopg2.connect(**postgres_connect_kwargs(connect_timeout=10))
             conn.autocommit = False
             cursor = conn.cursor()
             
@@ -202,13 +200,7 @@ class DocumentLoader:
         """Get thread-safe database connection with optimized settings"""
         if self._db_conn is None or self._db_conn.closed:
             self._db_conn = psycopg2.connect(
-                host=POSTGRES_HOST,
-                port=POSTGRES_PORT,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD,
-                connect_timeout=10
-                # No statement_timeout for writes - only for reads to avoid batch insert slowdowns
+                **postgres_connect_kwargs(connect_timeout=10)
             )
             self._db_conn.autocommit = False
         return self._db_conn

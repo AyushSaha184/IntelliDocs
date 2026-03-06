@@ -2,13 +2,6 @@
 # Copy and edit as needed for your deployment
 # See https://render.com/docs/infrastructure-as-code for details
 
-databases:
-  - name: rag-assistant-db
-    databaseName: rag_db
-    user: rag_user
-    region: singapore
-    plan: free
-
 services:
   - type: web
     name: rag-assistant
@@ -20,30 +13,31 @@ services:
     dockerCommand: sh -c "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
     healthCheckPath: /api/health
     envVars:
+      # Supabase Postgres (set manually in Render dashboard)
       - key: DATABASE_URL
-        fromDatabase:
-          name: rag-assistant-db
-          property: connectionString
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: rag-assistant-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: rag-assistant-db
-          property: port
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: rag-assistant-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: rag-assistant-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: rag-assistant-db
-          property: password
+        sync: false
+      - key: POSTGRES_SSLMODE
+        value: require
+      - key: VECTOR_BACKEND
+        value: pgvector
+      - key: PGVECTOR_DISTANCE
+        value: cosine
+      - key: PGVECTOR_PROBES
+        value: "10"
+      - key: STORAGE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: rag-documents
+      - key: AUTH_REQUIRED
+        value: "true"
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false  # Set to your Vercel frontend URL
       # NVIDIA Embedding API 
       - key: EMBEDDING_PROVIDER
         value: nvidia

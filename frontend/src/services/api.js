@@ -1,6 +1,17 @@
-// In production (Render), frontend is served by the same server — use relative URLs.
-// In local dev, proxy to the backend on localhost:8000.
+import { getAccessToken } from './supabase';
+
+// In production (Vercel), set VITE_API_URL to your backend API URL.
+// In local development, this falls back to localhost:8000.
 const BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '' : 'http://localhost:8000');
+
+async function buildAuthHeaders(extra = {}) {
+    const token = await getAccessToken();
+    const headers = { ...extra };
+    if (token) {
+        headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+}
 
 export async function uploadDocument(file, sessionId = null) {
     const formData = new FormData();
@@ -11,8 +22,10 @@ export async function uploadDocument(file, sessionId = null) {
         formData.append('session_id', sessionId);
     }
 
+    const headers = await buildAuthHeaders();
     const response = await fetch(`${BASE_URL}/api/upload`, {
         method: 'POST',
+        headers,
         body: formData,
     });
 
@@ -25,7 +38,8 @@ export async function uploadDocument(file, sessionId = null) {
 }
 
 export async function checkStatus(sessionId) {
-    const response = await fetch(`${BASE_URL}/api/status/${sessionId}`);
+    const headers = await buildAuthHeaders();
+    const response = await fetch(`${BASE_URL}/api/status/${sessionId}`, { headers });
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -36,8 +50,10 @@ export async function checkStatus(sessionId) {
 }
 
 export async function processSession(sessionId) {
+    const headers = await buildAuthHeaders();
     const response = await fetch(`${BASE_URL}/api/process/${sessionId}`, {
         method: 'POST',
+        headers,
     });
 
     if (!response.ok) {
@@ -49,9 +65,10 @@ export async function processSession(sessionId) {
 }
 
 export async function askQuestion(sessionId, question, opts = {}) {
+    const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
     const response = await fetch(`${BASE_URL}/api/ask`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
             session_id: sessionId,
             question,
@@ -69,7 +86,8 @@ export async function askQuestion(sessionId, question, opts = {}) {
 }
 
 export async function healthCheck() {
-    const response = await fetch(`${BASE_URL}/api/health`);
+    const headers = await buildAuthHeaders();
+    const response = await fetch(`${BASE_URL}/api/health`, { headers });
 
     if (!response.ok) {
         throw new Error(`Health check failed (${response.status})`);
@@ -100,9 +118,10 @@ export async function askQuestionStream(
     onWarning = () => { },
     onError = () => { },
 ) {
+    const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
     const response = await fetch(`${BASE_URL}/api/ask/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
             session_id: sessionId,
             question,
@@ -144,3 +163,4 @@ export async function askQuestionStream(
         }
     }
 }
+

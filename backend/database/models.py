@@ -22,6 +22,7 @@ class Session(Base):
     __tablename__ = "sessions"
     
     session_id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(64), nullable=True, index=True)
     filename = Column(String(255), nullable=False)
     file_size = Column(Integer, nullable=False)
     status = Column(String(50), default="processing")  # processing, ready, error

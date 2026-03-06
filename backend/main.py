@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from backend.api.routes import router
 from backend.database import init_db
 from backend.services.cleanup_scheduler import start_cleanup_scheduler, stop_cleanup_scheduler
+from config.config import CORS_ALLOWED_ORIGINS
 
 
 @asynccontextmanager
@@ -32,7 +33,7 @@ app = FastAPI(title="RAG Backend", lifespan=lifespan)
 # CORS – allow local dev
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS if CORS_ALLOWED_ORIGINS else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
