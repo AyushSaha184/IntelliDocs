@@ -16,6 +16,7 @@ export default function App() {
     const [password, setPassword] = useState('');
     const [authError, setAuthError] = useState('');
     const [authLoading, setAuthLoading] = useState(false);
+    const [showEmailAuth, setShowEmailAuth] = useState(false);
     const messagesEndRef = useRef(null);
 
     useEffect(() => {
@@ -63,6 +64,22 @@ export default function App() {
         if (!supabase) return;
         await supabase.auth.signOut();
         handleClear();
+    };
+
+    const handleGoogleSignIn = async () => {
+        if (!supabase) return;
+        setAuthError('');
+        setAuthLoading(true);
+        const { error } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: {
+                redirectTo: window.location.origin,
+            },
+        });
+        if (error) {
+            setAuthError(error.message);
+            setAuthLoading(false);
+        }
     };
 
     const handleSend = async (text) => {
@@ -233,37 +250,68 @@ export default function App() {
                 <div className="glass-panel w-full max-w-md m-3 p-6 rounded-3xl">
                     <h1 className="text-white font-semibold text-xl mb-4">Sign in to IntelliDocs</h1>
                     <div className="space-y-3">
-                        <input
-                            type="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            placeholder="Email"
-                            className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
-                        />
-                        <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="Password"
-                            className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
-                        />
-                        {authError && <p className="text-red-300 text-xs">{authError}</p>}
-                        <div className="flex gap-2">
-                            <button
-                                onClick={handleSignIn}
-                                disabled={authLoading}
-                                className="flex-1 rounded-xl bg-white/20 px-3 py-2 text-sm text-white hover:bg-white/30"
-                            >
-                                Sign In
-                            </button>
-                            <button
-                                onClick={handleSignUp}
-                                disabled={authLoading}
-                                className="flex-1 rounded-xl bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20"
-                            >
-                                Sign Up
-                            </button>
+                        <button
+                            onClick={handleGoogleSignIn}
+                            disabled={authLoading}
+                            className="w-full rounded-xl border border-blue-400 bg-white text-black px-4 py-3 text-base font-medium hover:bg-gray-100 transition-colors"
+                        >
+                            Continue with Google
+                        </button>
+
+                        <div className="flex items-center gap-3 py-1">
+                            <div className="h-px flex-1 bg-white/20" />
+                            <span className="text-xs uppercase tracking-wide text-white/70">or</span>
+                            <div className="h-px flex-1 bg-white/20" />
                         </div>
+
+                        {!showEmailAuth ? (
+                            <button
+                                onClick={() => setShowEmailAuth(true)}
+                                className="w-full rounded-xl bg-indigo-500 px-4 py-3 text-base font-medium text-white hover:bg-indigo-400 transition-colors"
+                            >
+                                Continue with Email
+                            </button>
+                        ) : (
+                            <>
+                                <input
+                                    type="email"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    placeholder="Email"
+                                    className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
+                                />
+                                <input
+                                    type="password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    placeholder="Password"
+                                    className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
+                                />
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={handleSignIn}
+                                        disabled={authLoading}
+                                        className="flex-1 rounded-xl bg-white/20 px-3 py-2 text-sm text-white hover:bg-white/30"
+                                    >
+                                        Sign In
+                                    </button>
+                                    <button
+                                        onClick={handleSignUp}
+                                        disabled={authLoading}
+                                        className="flex-1 rounded-xl bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20"
+                                    >
+                                        Sign Up
+                                    </button>
+                                </div>
+                                <button
+                                    onClick={() => setShowEmailAuth(false)}
+                                    className="w-full rounded-xl border border-white/20 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition-colors"
+                                >
+                                    Back
+                                </button>
+                            </>
+                        )}
+                        {authError && <p className="text-red-300 text-xs">{authError}</p>}
                     </div>
                 </div>
             </div>
