@@ -1,10 +1,3 @@
-"""Background cleanup scheduler for expired sessions.
-
-Cleans up sessions based on:
-  - 15 minutes max duration from creation
-  - 30 minutes of inactivity (no queries)
-"""
-
 import threading
 import time
 from pathlib import Path

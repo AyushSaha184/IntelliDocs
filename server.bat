@@ -23,6 +23,13 @@ echo.
 :: 2. Start Backend Server
 echo [2/3] Starting FastAPI Backend on port 8000...
 set PYTHONPATH=.
+set VECTOR_BACKEND=faiss
+set STORAGE_BACKEND=local
+set AUTH_REQUIRED=false
+echo Local backend profile:
+echo   VECTOR_BACKEND=%VECTOR_BACKEND%
+echo   STORAGE_BACKEND=%STORAGE_BACKEND%
+echo   AUTH_REQUIRED=%AUTH_REQUIRED%
 start "RAG Backend" cmd /c "uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
 timeout /t 3 /nobreak >nul
 echo Backend started in a new window.

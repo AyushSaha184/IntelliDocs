@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session as DBSession
+from sqlalchemy import text
 from backend.database.models import Session, get_db
 from backend.services.storage_service import create_session_storage
 from src.utils.Logger import get_logger
@@ -195,6 +196,18 @@ class SessionManager:
     def delete_session(self, session_id: str, db: DBSession):
         """Delete session and all associated data."""
         with self._lock:
+            # Delete pgvector embeddings for this session (if table exists)
+            try:
+                db.execute(
+                    text("DELETE FROM chunk_embeddings WHERE session_id = :session_id"),
+                    {"session_id": session_id},
+                )
+                db.commit()
+            except Exception as e:
+                # Some environments may not have pgvector table yet.
+                db.rollback()
+                logger.warning(f"Could not delete pgvector rows for {session_id}: {e}")
+
             # Delete from database
             session = db.query(Session).filter(Session.session_id == session_id).first()
             if session:
