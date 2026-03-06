@@ -23,7 +23,6 @@ export default function App() {
         setMessages(prev => [...prev.filter(m => !(m.role === 'system' && m.isSuccess)), userMessage]);
         setIsGenerating(true);
 
-        // Insert a placeholder assistant message that we will update token-by-token
         const msgId = Date.now();
         setMessages(prev => [...prev, {
             role: 'assistant',
@@ -43,15 +42,12 @@ export default function App() {
                 sessionId,
                 text,
                 {},
-                // onChunk — append token to the message
                 (token) => {
                     setMessages(prev => prev.map(m =>
                         m.id === msgId ? { ...m, content: m.content + token } : m
                     ));
                 },
-                // onMeta — attach sources
                 (meta) => updateMsg({ sources: meta.sources || [] }),
-                // onSuccess — mark verified
                 (result) => {
                     updateMsg({
                         isStreaming: false,
@@ -61,8 +57,7 @@ export default function App() {
                     });
                     setIsGenerating(false);
                 },
-                // onWarning — redact the message
-                (result) => {
+                () => {
                     updateMsg({
                         content: '⚠️ Verification failed. This response was removed for safety.',
                         isStreaming: false,
@@ -72,7 +67,6 @@ export default function App() {
                     });
                     setIsGenerating(false);
                 },
-                // onError
                 (err) => {
                     updateMsg({
                         content: `Error: ${err}`,
@@ -96,14 +90,11 @@ export default function App() {
 
     const handleUpload = async (file, existingSessionId = null) => {
         try {
-            // Use passed session_id (from ChatInput loop) or React state as fallback
             const sid = existingSessionId || sessionId;
             const result = await uploadDocument(file, sid);
 
-            // Store session ID in React state
             setSessionId(result.session_id);
 
-            // Add to uploaded files list
             setUploadedFiles(prev => [...prev, {
                 fileName: file.name,
                 fileSize: file.size,
@@ -112,7 +103,6 @@ export default function App() {
                 isProcessed: false
             }]);
 
-            // Required to re-process new files before continuing to chat
             setIsProcessed(false);
 
             return result;
@@ -128,16 +118,14 @@ export default function App() {
         setIsProcessing(true);
 
         try {
-            // Trigger processing of ALL uploaded files in the session
             await processSession(sessionId);
 
-            // Poll status until ready
             let status = 'processing';
             let attempts = 0;
-            const maxAttempts = 120; // 120 seconds timeout (more files = more time)
+            const maxAttempts = 120;
 
             while (status === 'processing' && attempts < maxAttempts) {
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+                await new Promise(resolve => setTimeout(resolve, 1000));
 
                 const statusResult = await checkStatus(sessionId);
                 status = statusResult.status;
@@ -145,10 +133,8 @@ export default function App() {
                 if (status === 'ready') {
                     setIsProcessed(true);
 
-                    // Mark all current files as processed
                     setUploadedFiles(prev => prev.map(f => ({ ...f, isProcessed: true })));
 
-                    // Add success message
                     const successMessage = {
                         role: 'system',
                         content: `Successfully processed ${uploadedFiles.length} file${uploadedFiles.length !== 1 ? 's' : ''}. You can now ask questions!`,
@@ -193,11 +179,13 @@ export default function App() {
     };
 
     return (
-        <div className="flex h-screen bg-[#343541] overflow-hidden">
-            {/* Left Sidebar (Full Height) */}
-            <div className="hidden md:flex flex-col w-64 lg:w-80 bg-[#202123] border-r border-white/20 p-4 lg:p-6 overflow-y-auto flex-shrink-0 text-gray-300 transition-all duration-300">
+        <div className="relative flex h-screen overflow-hidden text-[#f5efff]">
+            <div className="pointer-events-none absolute -top-24 -left-16 h-72 w-72 rounded-full bg-fuchsia-400/20 blur-3xl" />
+            <div className="pointer-events-none absolute top-10 -right-20 h-96 w-96 rounded-full bg-violet-400/20 blur-3xl" />
+
+            <div className="glass-panel hidden md:flex flex-col w-64 lg:w-80 m-3 p-4 lg:p-6 overflow-y-auto flex-shrink-0 text-[#d8cbe9] transition-all duration-300 rounded-3xl">
                 <div className="flex items-center gap-2 mb-8">
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[#10a37f] flex items-center justify-center">
+                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-fuchsia-400 to-violet-600 flex items-center justify-center shadow-lg shadow-violet-900/50">
                         <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                         </svg>
@@ -206,29 +194,25 @@ export default function App() {
                 </div>
 
                 <h2 className="text-white text-base lg:text-lg font-semibold mb-3">About IntelliDocs</h2>
-                <p className="text-xs lg:text-sm leading-relaxed mb-6">
+                <p className="text-xs lg:text-sm leading-relaxed mb-6 text-[#d8cbe9]">
                     This RAG-powered AI assistant enables organizations to instantly unlock insights from their internal knowledge base. It intelligently processes diverse data sources and delivers precise, context-aware answers in real time. Built for seamless integration into existing applications and workflows, the system supports both long-form analytical queries and quick factual lookups, helping teams research faster and make better-informed decisions.
                 </p>
 
                 <h3 className="text-white font-medium mb-3 text-sm lg:text-base">Supported Documents:</h3>
-                <ul className="text-xs lg:text-sm space-y-2 list-disc pl-4 text-gray-400">
+                <ul className="text-xs lg:text-sm space-y-2 list-disc pl-4 text-[#baa6d6]">
                     <li>Company policies</li>
                     <li>HR documents</li>
                     <li>FAQs</li>
                     <li>Financial summaries</li>
                     <li>Product documentation</li>
-                    <li>CSV structured data</li>
-                    <li>Website content (marketing and general information)</li>
+                    <li>Website content</li>
                 </ul>
             </div>
 
-            {/* Main Content Area */}
-            <div className="flex flex-col flex-1 overflow-hidden relative">
-                {/* Top Action Bar (No Border, Clear Button on Right) */}
+            <div className="flex flex-col flex-1 overflow-hidden relative z-10">
                 <div className="flex justify-between md:justify-end items-center p-4 flex-shrink-0 z-10">
-                    {/* Mobile Logo shows here only since sidebar is hidden on mobile */}
                     <div className="flex items-center gap-2 md:hidden">
-                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[#10a37f] flex items-center justify-center">
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-fuchsia-400 to-violet-600 flex items-center justify-center">
                             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                             </svg>
@@ -238,47 +222,64 @@ export default function App() {
 
                     <button
                         onClick={handleClear}
-                        className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-white text-xs sm:text-sm"
+                        className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
                         disabled={messages.length === 0 && uploadedFiles.length === 0}
                     >
                         Clear
                     </button>
                 </div>
-                {/* Messages Area */}
+
                 <div className="flex-1 overflow-y-auto">
                     {messages.length === 0 && uploadedFiles.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full px-4 py-6 text-center">
-                            <p className="text-gray-400 max-w-md mb-6 sm:mb-8 text-sm sm:text-base px-4">
-                                Upload documents and ask questions. I'll search through your files and provide accurate answers.
-                            </p>
+                            <div className="max-w-md w-full mb-6 sm:mb-8 px-5 py-4 rounded-3xl border border-white/20 bg-gradient-to-b from-white/18 to-white/8 shadow-lg shadow-violet-950/30 backdrop-blur-md">
+                                <p className="text-[#d4c6e8] text-sm sm:text-base">
+                                    Upload documents and ask questions. I'll search through your files and provide accurate answers.
+                                </p>
+                            </div>
 
-                            {/* Supported File Types Box */}
-                            <div className="max-w-3xl w-full bg-[#40414F] rounded-lg p-4 sm:p-6" style={{ border: '2px solid white' }}>
-                                <div className="flex items-center gap-2 text-white mb-3 sm:mb-4">
-                                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                    </svg>
-                                    <span className="font-semibold text-sm sm:text-base">Supported File Types (20MB max)</span>
-                                </div>
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
-                                    <div>
-                                        <h3 className="text-white font-medium mb-2 text-sm">Documents</h3>
-                                        <p className="text-xs sm:text-sm text-gray-400">PDF, Word, PowerPoint</p>
-                                        <p className="text-xs sm:text-sm text-gray-400">Excel</p>
-                                        <p className="text-xs sm:text-sm text-gray-400" title="Smart Detection for Q&A, Documents, and Bulk data">CSV</p>
+                            <div className="max-w-3xl w-full p-0 sm:p-0">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+                                    <div className="rounded-3xl border border-white/20 bg-gradient-to-b from-white/14 to-white/8 p-4 text-left shadow-lg shadow-violet-950/20 backdrop-blur-md">
+                                        <div className="mb-3 flex items-center gap-2">
+                                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-400/15 text-cyan-300">
+                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h10M7 11h10M7 15h6M6 3h9l5 5v13a1 1 0 01-1 1H6a1 1 0 01-1-1V4a1 1 0 011-1z" />
+                                                </svg>
+                                            </span>
+                                            <h3 className="text-white font-medium text-sm">Documents</h3>
+                                        </div>
+                                        <p className="text-xs sm:text-sm text-[#c6b5de]">PDF, Word, PowerPoint</p>
+                                        <p className="text-xs sm:text-sm text-[#c6b5de]">Excel</p>
+                                        <p className="text-xs sm:text-sm text-[#c6b5de]" title="Smart Detection for Q&A, Documents, and Bulk data">CSV</p>
                                     </div>
-                                    <div>
-                                        <h3 className="text-white font-medium mb-2 text-sm">Text/Markup</h3>
-                                        <p className="text-xs sm:text-sm text-gray-400">TXT, Markdown, RST</p>
-                                        <p className="text-xs sm:text-sm text-gray-400">JSON, XML, HTML</p>
+                                    <div className="rounded-3xl border border-white/20 bg-gradient-to-b from-white/14 to-white/8 p-4 text-left shadow-lg shadow-violet-950/20 backdrop-blur-md">
+                                        <div className="mb-3 flex items-center gap-2">
+                                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-amber-300/15 text-amber-200">
+                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h10" />
+                                                </svg>
+                                            </span>
+                                            <h3 className="text-white font-medium text-sm">Text/Markup</h3>
+                                        </div>
+                                        <p className="text-xs sm:text-sm text-[#c6b5de]">TXT, Markdown, RST</p>
+                                        <p className="text-xs sm:text-sm text-[#c6b5de]">JSON, XML, HTML</p>
                                     </div>
-                                    <div>
-                                        <h3 className="text-white font-medium mb-2 text-sm">Code Files</h3>
-                                        <p className="text-xs sm:text-sm text-gray-400">Python, JavaScript</p>
-                                        <p className="text-xs sm:text-sm text-gray-400">Java, C/C++, Shell, YAML</p>
+                                    <div className="rounded-3xl border border-white/20 bg-gradient-to-b from-white/14 to-white/8 p-4 text-left shadow-lg shadow-violet-950/20 backdrop-blur-md">
+                                        <div className="mb-3 flex items-center gap-2">
+                                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-fuchsia-300/15 text-fuchsia-200">
+                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h8M9 11h6M10 15h4M5 4h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1z" />
+                                                </svg>
+                                            </span>
+                                            <h3 className="text-white font-medium text-sm">Code Files</h3>
+                                        </div>
+                                        <p className="text-xs sm:text-sm text-[#c6b5de]">Python, JavaScript</p>
+                                        <p className="text-xs sm:text-sm text-[#c6b5de]">Java, C/C++, Shell, YAML</p>
                                     </div>
                                 </div>
                             </div>
+
                         </div>
                     ) : (
                         <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6">
@@ -300,25 +301,24 @@ export default function App() {
                     )}
                 </div>
 
-                {/* Input Area */}
-                <div className="bg-[#343541] flex-shrink-0">
-                    <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-3 sm:py-4">
+                <div className="flex-shrink-0 pb-3 px-3 sm:px-4">
+                    <div className="glass-panel max-w-3xl mx-auto w-full rounded-2xl px-3 sm:px-4 py-3 sm:py-4">
                         <ChatInput
                             onSend={handleSend}
                             onUpload={handleUpload}
                             onProcess={handleProcess}
                             disabled={isGenerating}
-                            placeholder={isGenerating ? "Waiting for response..." : "Send a message..."}
+                            placeholder={isGenerating ? 'Waiting for response...' : 'Send a message...'}
                             uploadedFiles={uploadedFiles}
                             isProcessing={isProcessing}
                             isProcessed={isProcessed}
                         />
-                        <div className="text-center text-xs text-gray-500 mt-2 flex flex-col items-center gap-1">
+                        <div className="text-center text-xs text-[#bfaed9] mt-2 flex flex-col items-center gap-1">
                             <span>
-                                {isProcessing ? "Processing documents..." : !isProcessed && uploadedFiles.length > 0 ? "Click Process to start asking questions" : "AI can make mistakes. Please double check important info."}
+                                {isProcessing ? 'Processing documents...' : !isProcessed && uploadedFiles.length > 0 ? 'Click Process to start asking questions' : 'AI can make mistakes. Please double check important info.'}
                             </span>
-                            <span className="text-yellow-500/60 flex items-center gap-1">
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            <span className="text-white/70 flex items-center gap-1">
+                                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                                 Sessions and documents automatically expire after 30 minutes of inactivity
                             </span>
                         </div>

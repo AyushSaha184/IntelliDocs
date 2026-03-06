@@ -39,10 +39,10 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
     };
 
     return (
-        <div className="bg-[#40414F] border border-white/20 rounded-lg mb-3 transition-all duration-300 overflow-hidden">
+        <div className="bg-white/10 border border-white/20 rounded-xl mb-3 transition-all duration-300 overflow-hidden backdrop-blur-md">
             {/* Header - always visible, clickable to expand/collapse when processed */}
             <div
-                className={`flex items-center justify-between p-3 sm:p-4 gap-2 ${isProcessed ? 'cursor-pointer hover:bg-white/5' : ''}`}
+                className={`flex items-center justify-between p-3 sm:p-4 gap-2 ${isProcessed ? 'cursor-pointer hover:bg-white/10' : ''}`}
                 onClick={isProcessed ? () => setCollapsed(prev => !prev) : undefined}
             >
                 <div className="flex items-center gap-2">
@@ -61,7 +61,7 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
                     </span>
                 </div>
                 {isProcessed ? (
-                    <div className="flex items-center gap-1 sm:gap-2 text-green-400 text-xs sm:text-sm flex-shrink-0">
+                    <div className="flex items-center gap-1 sm:gap-2 text-fuchsia-200 text-xs sm:text-sm flex-shrink-0">
                         <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                         </svg>
@@ -73,7 +73,7 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
                         type="button"
                         onClick={onProcess}
                         disabled={isProcessing}
-                        className="px-3 sm:px-4 py-1 sm:py-1.5 bg-[#10a37f] text-white text-xs sm:text-sm rounded-md hover:bg-[#0d8c6f] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 sm:gap-2 flex-shrink-0"
+                        className="px-3 sm:px-4 py-1 sm:py-1.5 bg-gradient-to-r from-fuchsia-500 to-violet-500 text-white text-xs sm:text-sm rounded-md hover:from-fuchsia-400 hover:to-violet-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 sm:gap-2 flex-shrink-0"
                     >
                         {isProcessing ? (
                             <>
@@ -94,8 +94,8 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
             {!collapsed && (
                 <div className="px-3 sm:px-4 pb-3 sm:pb-4">
                     {isProcessing && (
-                        <div className="mb-2 sm:mb-3 px-2 sm:px-3 py-1.5 sm:py-2 bg-blue-500/10 border border-blue-500/30 rounded-md">
-                            <p className="text-xs sm:text-sm text-blue-300">⏳ Please wait for a while...</p>
+                        <div className="mb-2 sm:mb-3 px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg border border-violet-300/35 bg-gradient-to-r from-white/12 to-white/8 backdrop-blur-sm">
+                            <p className="text-xs sm:text-sm text-[#ddd1ef]">Please wait for a while...</p>
                         </div>
                     )}
 
@@ -104,15 +104,15 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
                         {files.map((file, index) => (
                             <div
                                 key={index}
-                                className="flex items-center gap-2 sm:gap-3 p-1.5 sm:p-2 bg-[#343541] rounded-md"
+                                className="flex items-center gap-2 sm:gap-3 p-1.5 sm:p-2 bg-black/20 border border-white/10 rounded-md"
                             >
                                 <span className="text-base sm:text-xl flex-shrink-0">{getFileIcon(file.fileName)}</span>
                                 <div className="flex-1 min-w-0">
                                     <p className="text-xs sm:text-sm text-white truncate">{file.fileName}</p>
-                                    <p className="text-[10px] sm:text-xs text-gray-400">{formatFileSize(file.fileSize)}</p>
+                                    <p className="text-[10px] sm:text-xs text-[#bdaad9]">{formatFileSize(file.fileSize)}</p>
                                 </div>
                                 <div className="flex-shrink-0">
-                                    <svg className="w-4 h-4 sm:w-5 sm:h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg className="w-4 h-4 sm:w-5 sm:h-5 text-fuchsia-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                                     </svg>
                                 </div>
@@ -124,3 +124,4 @@ export default function UploadedFiles({ files, onProcess, isProcessing, isProces
         </div>
     );
 }
+

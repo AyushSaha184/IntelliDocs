@@ -77,7 +77,7 @@ export default function FileUpload({ onFilesSelected, disabled, pendingFiles = [
                 type="button"
                 onClick={handleButtonClick}
                 disabled={disabled || uploading}
-                className="p-1.5 sm:p-2 rounded-md hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed relative"
+                className="p-1.5 sm:p-2 rounded-xl bg-white/10 border border-white/20 hover:bg-white/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed relative"
                 title={pendingFiles.length > 0 ? "Add more files" : "Upload files"}
             >
                 <svg
@@ -97,7 +97,7 @@ export default function FileUpload({ onFilesSelected, disabled, pendingFiles = [
 
             {/* Error message */}
             {error && (
-                <div className="absolute bottom-full left-0 mb-2 p-2 sm:p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-xs sm:text-sm max-w-[250px] sm:max-w-xs z-50">
+                <div className="absolute bottom-full left-0 mb-2 p-2 sm:p-3 bg-red-500/20 border border-red-500/50 rounded-xl text-red-200 text-xs sm:text-sm max-w-[250px] sm:max-w-xs z-50 backdrop-blur-md">
                     {error}
                 </div>
             )}

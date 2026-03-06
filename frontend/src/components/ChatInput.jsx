@@ -106,9 +106,9 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
 
             {/* Input form */}
             <form onSubmit={handleSubmit} className="relative">
-                <div className="flex items-end gap-1.5 sm:gap-2">
+                <div className="flex items-center gap-1.5 sm:gap-2">
                     {/* File Upload Button */}
-                    <div className="pb-1.5 sm:pb-2">
+                    <div className="self-center">
                         <FileUpload
                             onFilesSelected={handleFilesSelected}
                             disabled={disabled || uploading || isProcessing}
@@ -126,13 +126,13 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
                             placeholder={isProcessing ? "Processing files..." : !isProcessed && uploadedFiles.length > 0 ? "Click Process to continue" : placeholder}
                             disabled={isChatDisabled}
                             rows={1}
-                            className="w-full resize-none rounded-xl bg-[#40414F] border border-white/20 px-3 sm:px-4 py-2 sm:py-3 pr-10 sm:pr-12 text-white placeholder-gray-400 focus:outline-none focus:border-white/30 disabled:opacity-50 disabled:cursor-not-allowed text-xs sm:text-sm"
-                            style={{ maxHeight: '200px' }}
+                            className="chat-input-no-scrollbar w-full resize-none overflow-y-hidden rounded-2xl bg-white/10 border border-white/20 px-3 sm:px-4 py-2 sm:py-3 pr-10 sm:pr-12 text-white placeholder-[#c8b9de] focus:outline-none focus:border-white/40 focus:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed text-xs sm:text-sm"
+                            style={{ maxHeight: '200px', scrollbarWidth: 'none', msOverflowStyle: 'none' }}
                         />
                         <button
                             type="submit"
                             disabled={!input.trim() || isChatDisabled}
-                            className="absolute right-1.5 sm:right-2 bottom-1.5 sm:bottom-2 p-1.5 sm:p-2 rounded-lg bg-[#10a37f] text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#0d8c6f] transition-colors"
+                            className="absolute right-1.5 sm:right-2 top-1/2 -translate-y-1/2 p-1.5 sm:p-2 rounded-lg bg-gradient-to-r from-fuchsia-500 to-violet-500 text-white disabled:opacity-50 disabled:cursor-not-allowed hover:from-fuchsia-400 hover:to-violet-400 transition-colors"
                             title={!isProcessed && uploadedFiles.length > 0 ? "Process files first" : "Send message"}
                         >
                             <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
