@@ -39,10 +39,22 @@ class LocalSessionStorage(BaseSessionStorage):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def _next_available_name(self, docs_dir: Path, filename: str) -> str:
+        path = docs_dir / filename
+        if not path.exists():
+            return filename
+        stem = path.stem
+        suffix = path.suffix
+        counter = 2
+        while True:
+            candidate = f"{stem} ({counter}){suffix}"
+            if not (docs_dir / candidate).exists():
+                return candidate
+            counter += 1
+
     def save_document(self, session_id: str, filename: str, content: bytes) -> None:
-        path = self._documents_dir(session_id) / filename
-        if path.exists():
-            raise FileExistsError(f"File {filename} already exists in this session")
+        docs_dir = self._documents_dir(session_id)
+        path = docs_dir / self._next_available_name(docs_dir, filename)
         with open(path, "wb") as f:
             f.write(content)
 
@@ -91,10 +103,21 @@ class SupabaseSessionStorage(BaseSessionStorage):
     def _object_path(self, session_id: str, filename: str) -> str:
         return f"{self._prefix(session_id)}/{filename}"
 
+    def _next_available_name(self, session_id: str, filename: str) -> str:
+        if not self.document_exists(session_id, filename):
+            return filename
+        p = Path(filename)
+        stem = p.stem
+        suffix = p.suffix
+        counter = 2
+        while True:
+            candidate = f"{stem} ({counter}){suffix}"
+            if not self.document_exists(session_id, candidate):
+                return candidate
+            counter += 1
+
     def save_document(self, session_id: str, filename: str, content: bytes) -> None:
-        object_path = self._object_path(session_id, filename)
-        if self.document_exists(session_id, filename):
-            raise FileExistsError(f"File {filename} already exists in this session")
+        object_path = self._object_path(session_id, self._next_available_name(session_id, filename))
 
         self._client.storage.from_(self.bucket).upload(
             path=object_path,

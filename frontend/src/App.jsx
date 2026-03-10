@@ -4,7 +4,7 @@ import ChatInput from './components/ChatInput';
 import {
     uploadDocument, checkStatus, askQuestionStream, processSession,
     createGuestSession, deleteGuestSession,
-    createChat, listChats, deleteChat, listMessages,
+    createChat, listChats, deleteChat, listMessages, listChatDocuments, clearChatFiles,
 } from './services/api';
 import { supabase } from './services/supabase';
 
@@ -14,11 +14,15 @@ export default function App() {
     const [uploadedFiles, setUploadedFiles] = useState([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [isProcessed, setIsProcessed] = useState(false);
+    const [processingProgress, setProcessingProgress] = useState(null);
+    const [pendingFileCount, setPendingFileCount] = useState(0);
+    const [clearSignal, setClearSignal] = useState(0);
 
     // Chat state
     const [activeChatId, setActiveChatId] = useState(null);
     const [chatList, setChatList] = useState([]);
     const [showHistory, setShowHistory] = useState(false);
+    const [chatReloadToken, setChatReloadToken] = useState(0);
 
     // Auth / guest state
     const [user, setUser] = useState(null);
@@ -32,15 +36,77 @@ export default function App() {
 
     // Upload error state (only shown when limit hit)
     const [uploadError, setUploadError] = useState(null);
+    const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
+    const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+    const [showBugReport, setShowBugReport] = useState(false);
 
     const messagesEndRef = useRef(null);
+    const messagesContainerRef = useRef(null);
     const guestSessionRef = useRef(null);
+    const channelRef = useRef(null);
+    const processingCancelledRef = useRef(false);
+    const draftChatIdsRef = useRef(new Set());
+    const prevMessageCountRef = useRef(0);
+    const prevUserIdRef = useRef(null);
+    const bugReportRef = useRef(null);
 
     const isGuest = !user;
 
+    const resetAppState = useCallback(() => {
+        setMessages([]);
+        setUploadedFiles([]);
+        setIsGenerating(false);
+        setIsProcessing(false);
+        setIsProcessed(false);
+        setProcessingProgress(null);
+        setPendingFileCount(0);
+        setClearSignal(prev => prev + 1);
+        setActiveChatId(null);
+        setChatList([]);
+        setUploadError(null);
+        setChatReloadToken(0);
+        draftChatIdsRef.current.clear();
+        processingCancelledRef.current = true;
+    }, [])
+
     useEffect(() => {
+        const messageCount = messages.length;
+        if (messageCount > prevMessageCountRef.current) {
+            setShouldAutoScroll(true);
+        }
+        prevMessageCountRef.current = messageCount;
+    }, [messages.length]);
+
+    useEffect(() => {
+        if (!shouldAutoScroll) return;
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+    }, [messages, shouldAutoScroll]);
+
+    useEffect(() => {
+        const viewport = window.visualViewport;
+        if (!viewport) return;
+
+        const updateHeight = () => setViewportHeight(Math.round(viewport.height));
+        updateHeight();
+
+        viewport.addEventListener('resize', updateHeight);
+        viewport.addEventListener('scroll', updateHeight);
+        return () => {
+            viewport.removeEventListener('resize', updateHeight);
+            viewport.removeEventListener('scroll', updateHeight);
+        };
+    }, []);
+
+    const handleMessageScroll = () => {
+        const container = messagesContainerRef.current;
+        if (!container) return;
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        if (distanceFromBottom > 50) {
+            setShouldAutoScroll(false);
+        } else {
+            setShouldAutoScroll(true);
+        }
+    };
 
     // Auth listener
     useEffect(() => {
@@ -65,6 +131,18 @@ export default function App() {
             subscription.unsubscribe();
         };
     }, []);
+
+    useEffect(() => {
+        const currentUserId = user?.id || null;
+        if (prevUserIdRef.current === null) {
+            prevUserIdRef.current = currentUserId;
+            return;
+        }
+        if (prevUserIdRef.current !== currentUserId) {
+            resetAppState();
+        }
+        prevUserIdRef.current = currentUserId;
+    }, [user, resetAppState]);
 
     const initGuestSession = useCallback(async () => {
         if (guestSessionId) return guestSessionId;
@@ -98,23 +176,127 @@ export default function App() {
         if (!isGuest) refreshChats();
     }, [isGuest, refreshChats]);
 
-    // Load messages when switching chats
+    const broadcastChatSync = useCallback((event, chatId = null) => {
+        try {
+            channelRef.current?.postMessage({ event, chatId, ts: Date.now() });
+        } catch {
+            // ignore cross-tab sync errors
+        }
+    }, []);
+
     useEffect(() => {
-        if (!activeChatId) return;
+        if (typeof BroadcastChannel === 'undefined') return;
+        const channel = new BroadcastChannel('rag-assistant-chat-sync');
+        channelRef.current = channel;
+
+        channel.onmessage = (evt) => {
+            const payload = evt?.data;
+            if (!payload || !payload.event) return;
+
+            if (!isGuest) refreshChats();
+            if (payload.chatId && payload.chatId === activeChatId) {
+                setChatReloadToken(prev => prev + 1);
+            }
+        };
+
+        return () => {
+            channel.close();
+            channelRef.current = null;
+        };
+    }, [activeChatId, isGuest, refreshChats]);
+
+    // Load chat state when switching chats
+    useEffect(() => {
+        if (!activeChatId) {
+            setMessages([]);
+            setUploadedFiles([]);
+            setIsProcessed(false);
+            setIsProcessing(false);
+            setProcessingProgress(null);
+            return;
+        }
+
         let cancelled = false;
         (async () => {
             try {
-                const data = await listMessages(activeChatId, 200, 0, isGuest ? guestSessionId : null);
+                const [messageData, docsData] = await Promise.all([
+                    listMessages(activeChatId, 200, 0, isGuest ? guestSessionId : null),
+                    listChatDocuments(activeChatId, isGuest ? guestSessionId : null),
+                ]);
                 if (cancelled) return;
-                setMessages((data.messages || []).map(m => ({
+
+                setMessages((messageData.messages || []).map(m => ({
+                    id: m.id,
                     role: m.role,
                     content: m.content,
                     timestamp: new Date(m.created_at).getTime(),
                 })));
+
+                const nextFiles = (docsData.documents || []).map(d => ({
+                    fileName: d.filename,
+                    fileSize: d.file_size,
+                    uploadedAt: new Date(d.created_at).getTime(),
+                    chatId: activeChatId,
+                    isProcessed: d.status === 'ready',
+                    isFailed: d.status === 'failed',
+                    isExpired: false,
+                }));
+                setUploadedFiles(nextFiles);
+                setIsProcessed(nextFiles.length > 0 && nextFiles.some(f => f.isProcessed));
             } catch { /* ignore */ }
         })();
         return () => { cancelled = true; };
-    }, [activeChatId, isGuest, guestSessionId]);
+    }, [activeChatId, isGuest, guestSessionId, chatReloadToken]);
+
+    useEffect(() => {
+        const onFocus = async () => {
+            if (!activeChatId || uploadedFiles.length === 0) return;
+            try {
+                await checkStatus(activeChatId, isGuest ? guestSessionId : null);
+                setUploadedFiles(prev => prev.map(f => ({ ...f, isExpired: false })));
+            } catch (err) {
+                if (err?.status === 404 || err?.error_code === 'CHAT_NOT_FOUND') {
+                    setUploadedFiles(prev => prev.map(f => ({ ...f, isProcessed: false, isExpired: true })));
+                    setIsProcessed(false);
+                    setMessages(prev => ([...prev, {
+                        id: `sys-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                        role: 'system',
+                        content: 'This session has expired. Please re-upload your files to continue.',
+                        timestamp: Date.now(),
+                        isError: true,
+                    }]));
+                }
+            }
+        };
+
+        window.addEventListener('focus', onFocus);
+        return () => window.removeEventListener('focus', onFocus);
+    }, [activeChatId, guestSessionId, isGuest, uploadedFiles.length]);
+
+    const maybeDeleteUnusedDraftChat = useCallback(async () => {
+        if (isGuest || !activeChatId || !draftChatIdsRef.current.has(activeChatId)) return;
+
+        const hasMessages = messages.some(m => m.role === 'user' || m.role === 'assistant');
+        const hasFiles = uploadedFiles.length > 0;
+        if (hasMessages || hasFiles) {
+            draftChatIdsRef.current.delete(activeChatId);
+            return;
+        }
+
+        try {
+            await deleteChat(activeChatId, isGuest ? guestSessionId : null);
+            draftChatIdsRef.current.delete(activeChatId);
+            if (activeChatId) {
+                setActiveChatId(null);
+                setMessages([]);
+                setUploadedFiles([]);
+                setIsProcessed(false);
+            }
+            refreshChats();
+        } catch {
+            // ignore cleanup errors
+        }
+    }, [activeChatId, guestSessionId, isGuest, messages, refreshChats, uploadedFiles]);
 
     const handleSignIn = async () => {
         if (!supabase) return;
@@ -137,7 +319,7 @@ export default function App() {
     const handleSignOut = async () => {
         if (!supabase) return;
         await supabase.auth.signOut();
-        handleClear();
+        resetAppState();
     };
 
     const handleGoogleSignIn = async () => {
@@ -159,7 +341,17 @@ export default function App() {
     const handleSend = async (text) => {
         if (!text.trim() || isGenerating || !isProcessed || !activeChatId) return;
 
-        const userMessage = { role: 'user', content: text, timestamp: Date.now() };
+        draftChatIdsRef.current.delete(activeChatId);
+        broadcastChatSync('message-sent', activeChatId);
+        if (!isGuest) refreshChats();
+
+        const userMessageTs = Date.now();
+        const userMessage = {
+            id: `u-${userMessageTs}-${Math.random().toString(16).slice(2)}`,
+            role: 'user',
+            content: text,
+            timestamp: userMessageTs,
+        };
         setMessages(prev => [...prev.filter(m => !(m.role === 'system' && m.isSuccess)), userMessage]);
         setIsGenerating(true);
 
@@ -228,7 +420,7 @@ export default function App() {
         }
     };
 
-    const handleUpload = async (file, existingChatId = null) => {
+    const handleUpload = async (file, existingChatId = null, options = {}) => {
         setUploadError(null);
         try {
             // For guests, ensure a session exists
@@ -238,12 +430,14 @@ export default function App() {
             }
 
             const chatId = existingChatId || activeChatId;
-            const result = await uploadDocument(file, chatId, sessionId);
+            const result = await uploadDocument(file, chatId, sessionId, options);
 
             // Set active chat from response
             if (result.chat_id) {
+                draftChatIdsRef.current.delete(result.chat_id);
                 setActiveChatId(result.chat_id);
-                if (!isGuest) refreshChats();
+                if (!isGuest && !chatId) refreshChats();
+                broadcastChatSync('upload-complete', result.chat_id);
             }
 
             setUploadedFiles(prev => [...prev, {
@@ -251,19 +445,24 @@ export default function App() {
                 fileSize: file.size,
                 uploadedAt: Date.now(),
                 chatId: result.chat_id,
-                isProcessed: false
+                isProcessed: false,
+                isFailed: false,
+                isExpired: false,
             }]);
 
             setIsProcessed(false);
             return result;
         } catch (error) {
+            if (error?.name === 'AbortError') {
+                throw error;
+            }
             // Show upload error only when limit is hit
             if (error.error_code) {
                 const messages = {
-                    GUEST_LIMIT_REACHED: 'Guest upload limit reached (3 documents). Sign in for more.',
+                    GUEST_LIMIT_REACHED: 'Guest upload limit reached (5 documents). Sign in for more.',
                     PER_CHAT_LIMIT_REACHED: 'This chat has reached the document limit (15).',
                     ACCOUNT_LIMIT_REACHED: 'Account document limit reached (40). Delete a chat to free space.',
-                    DUPLICATE_DOCUMENT: 'This file has already been uploaded to this chat.',
+                    DUPLICATE_DOCUMENT: 'This file is already uploading or stored in this chat.',
                 };
                 setUploadError(messages[error.error_code] || error.detail);
             } else {
@@ -276,7 +475,9 @@ export default function App() {
     const handleProcess = async () => {
         if (!activeChatId) return;
 
+        processingCancelledRef.current = false;
         setIsProcessing(true);
+        setProcessingProgress(null);
 
         try {
             await processSession(activeChatId, isGuest ? guestSessionId : null);
@@ -286,23 +487,41 @@ export default function App() {
             const maxAttempts = 120;
 
             while (status === 'processing' && attempts < maxAttempts) {
+                if (processingCancelledRef.current) {
+                    throw new Error('Processing cancelled');
+                }
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
                 const statusResult = await checkStatus(activeChatId, isGuest ? guestSessionId : null);
                 status = statusResult.status;
+                if (statusResult.document_progress) {
+                    setProcessingProgress(statusResult.document_progress);
+                }
 
                 if (status === 'ready') {
-                    setIsProcessed(true);
-
-                    setUploadedFiles(prev => prev.map(f => ({ ...f, isProcessed: true })));
+                    const docsData = await listChatDocuments(activeChatId, isGuest ? guestSessionId : null);
+                    const nextFiles = (docsData.documents || []).map(d => ({
+                        fileName: d.filename,
+                        fileSize: d.file_size,
+                        uploadedAt: new Date(d.created_at).getTime(),
+                        chatId: activeChatId,
+                        isProcessed: d.status === 'ready',
+                        isFailed: d.status === 'failed',
+                        isExpired: false,
+                    }));
+                    setUploadedFiles(nextFiles);
+                    setIsProcessed(nextFiles.length > 0 && nextFiles.some(f => f.isProcessed));
+                    setProcessingProgress(null);
 
                     const successMessage = {
                         role: 'system',
-                        content: `Successfully processed ${uploadedFiles.length} file${uploadedFiles.length !== 1 ? 's' : ''}. You can now ask questions!`,
+                        content: `Successfully processed ${nextFiles.length} file${nextFiles.length !== 1 ? 's' : ''}. You can now ask questions!`,
                         timestamp: Date.now(),
                         isSuccess: true
                     };
                     setMessages(prev => [...prev, successMessage]);
+                    broadcastChatSync('processing-ready', activeChatId);
+                    if (!isGuest) refreshChats();
                     break;
                 }
 
@@ -320,6 +539,7 @@ export default function App() {
         } catch (error) {
             console.error('Processing error:', error);
             const errorMessage = {
+                id: `sys-${Date.now()}-${Math.random().toString(16).slice(2)}`,
                 role: 'system',
                 content: `Processing failed: ${error.message}`,
                 timestamp: Date.now(),
@@ -328,35 +548,95 @@ export default function App() {
             setMessages(prev => [...prev, errorMessage]);
         } finally {
             setIsProcessing(false);
+            setProcessingProgress(null);
         }
     };
 
     const handleClear = () => {
-        setMessages([]);
-        setUploadedFiles([]);
-        setIsProcessing(false);
-        setIsProcessed(false);
-        setActiveChatId(null);
-        setUploadError(null);
+        (async () => {
+            processingCancelledRef.current = true;
+            setClearSignal(prev => prev + 1);
+            setPendingFileCount(0);
+            setIsProcessing(false);
+            setProcessingProgress(null);
+            setUploadError(null);
+
+            if (!activeChatId) {
+                setUploadedFiles([]);
+                setIsProcessed(false);
+                return;
+            }
+
+            try {
+                await clearChatFiles(activeChatId, isGuest ? guestSessionId : null);
+                broadcastChatSync('files-cleared', activeChatId);
+            } catch {
+                // ignore clear failures in UI reset flow
+            }
+
+            setUploadedFiles([]);
+            setIsProcessed(false);
+        })();
     };
 
     const handleDeleteChat = async (chatId) => {
         try {
             await deleteChat(chatId, isGuest ? guestSessionId : null);
-            if (activeChatId === chatId) handleClear();
+            draftChatIdsRef.current.delete(chatId);
+            broadcastChatSync('chat-deleted', chatId);
+            if (activeChatId === chatId) {
+                setActiveChatId(null);
+                setMessages([]);
+                setUploadedFiles([]);
+                setIsProcessed(false);
+                setPendingFileCount(0);
+                setClearSignal(prev => prev + 1);
+            }
             refreshChats();
         } catch { /* ignore */ }
     };
 
     const handleSelectChat = async (chat) => {
+        if (activeChatId === chat.id) return;
+        await maybeDeleteUnusedDraftChat();
         setActiveChatId(chat.id);
-        setUploadedFiles([]);
+        setClearSignal(prev => prev + 1);
+        setPendingFileCount(0);
+        setProcessingProgress(null);
         setUploadError(null);
-        setIsProcessed(true); // assume previously processed chats are ready
     };
 
-    const handleNewChat = () => {
-        handleClear();
+    const handleNewChat = async () => {
+        if (isGuest) {
+            setActiveChatId(null);
+            setClearSignal(prev => prev + 1);
+            setPendingFileCount(0);
+            setMessages([]);
+            setUploadedFiles([]);
+            setIsProcessed(false);
+            setProcessingProgress(null);
+            setUploadError(null);
+            return;
+        }
+
+        await maybeDeleteUnusedDraftChat();
+
+        try {
+            const created = await createChat('New');
+            draftChatIdsRef.current.add(created.id);
+            setActiveChatId(created.id);
+            setMessages([]);
+            setUploadedFiles([]);
+            setIsProcessed(false);
+            setProcessingProgress(null);
+            setUploadError(null);
+            setClearSignal(prev => prev + 1);
+            setPendingFileCount(0);
+            refreshChats();
+            broadcastChatSync('chat-created', created.id);
+        } catch {
+            // ignore
+        }
     };
 
     const handleContinueAsGuest = () => {
@@ -454,8 +734,17 @@ export default function App() {
         );
     }
 
+    const orderedMessages = [...messages].sort((a, b) => {
+        const ta = a.timestamp || 0;
+        const tb = b.timestamp || 0;
+        if (ta !== tb) return ta - tb;
+        const ia = String(a.id || '');
+        const ib = String(b.id || '');
+        return ia.localeCompare(ib);
+    });
+
     return (
-        <div className="relative flex h-screen overflow-hidden text-[#f5efff]">
+        <div className="relative flex overflow-hidden text-[#f5efff]" style={{ height: `${viewportHeight}px` }}>
             <div className="pointer-events-none absolute -top-24 -left-16 h-72 w-72 rounded-full bg-fuchsia-400/20 blur-3xl" />
             <div className="pointer-events-none absolute top-10 -right-20 h-96 w-96 rounded-full bg-violet-400/20 blur-3xl" />
 
@@ -553,10 +842,38 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                        {/* Report Bug dropdown */}
+                        <div className="relative" ref={bugReportRef}>
+                            <button
+                                onClick={() => setShowBugReport(prev => !prev)}
+                                className="glass-card inline-flex h-8 items-center justify-center gap-1 rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
+                            >
+                                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8 14A1 1 0 003.15 19h17.7a1 1 0 00.86-1.5l-8-14a1 1 0 00-1.72 0z" />
+                                </svg>
+                                <span>Report Bug</span>
+                            </button>
+                            {showBugReport && (
+                                <div
+                                    className="absolute right-0 top-10 z-50 w-64 rounded-2xl border border-white/20 bg-[#1a1030]/90 backdrop-blur-md p-4 text-xs text-white/80 shadow-xl"
+                                    onMouseLeave={() => setShowBugReport(false)}
+                                >
+                                    Please report the bug{' '}
+                                    <a
+                                        href="mailto:ayushsaha1834@gmail.com"
+                                        className="text-fuchsia-300 underline underline-offset-2 hover:text-fuchsia-200 transition-colors"
+                                    >
+                                        here
+                                    </a>
+                                    {' '}with screenshots.
+                                </div>
+                            )}
+                        </div>
+
                         <button
                             onClick={handleClear}
                             className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
-                            disabled={messages.length === 0 && uploadedFiles.length === 0}
+                            disabled={!activeChatId && uploadedFiles.length === 0 && pendingFileCount === 0 && !isProcessing}
                         >
                             Clear
                         </button>
@@ -579,7 +896,7 @@ export default function App() {
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto">
+                <div className="flex-1 overflow-y-auto" ref={messagesContainerRef} onScroll={handleMessageScroll}>
                     {messages.length === 0 && uploadedFiles.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full px-4 py-6 text-center">
                             <div className="max-w-md w-full mb-6 sm:mb-8 px-5 py-4 rounded-3xl border border-white/20 bg-gradient-to-b from-white/18 to-white/8 shadow-lg shadow-violet-950/30 backdrop-blur-md">
@@ -633,8 +950,8 @@ export default function App() {
                         </div>
                     ) : (
                         <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6">
-                            {messages.map((msg, idx) => (
-                                <ChatMessage key={idx} message={msg} />
+                            {orderedMessages.map((msg, idx) => (
+                                <ChatMessage key={msg.id || `${msg.timestamp || 0}-${idx}`} message={msg} />
                             ))}
                             {isGenerating && (
                                 <ChatMessage
@@ -674,6 +991,9 @@ export default function App() {
                             uploadedFiles={uploadedFiles}
                             isProcessing={isProcessing}
                             isProcessed={isProcessed}
+                            processingProgress={processingProgress}
+                            clearSignal={clearSignal}
+                            onPendingCountChange={setPendingFileCount}
                         />
                         <div className="text-center text-xs text-[#bfaed9] mt-2 flex flex-col items-center gap-1">
                             <span>

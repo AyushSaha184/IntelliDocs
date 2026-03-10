@@ -20,7 +20,7 @@ from src.utils.Logger import get_logger
 logger = get_logger(__name__)
 
 # ── Quota constants ──────────────────────────────────────────────────────
-GUEST_DOC_LIMIT = 3
+GUEST_DOC_LIMIT = 5
 PER_CHAT_DOC_LIMIT = 15
 ACCOUNT_DOC_LIMIT = 40
 
@@ -249,21 +249,7 @@ def check_and_register_document(
                 f"Account limit reached ({ACCOUNT_DOC_LIMIT}). Delete older chats/documents to upload new files."
             )
 
-    # Deduplication: check content_hash for this user
-    if not is_guest and user_id and content_hash:
-        existing = db.query(Document).filter(
-            Document.user_id == user_id,
-            Document.content_hash == content_hash,
-            Document.status.in_(ACTIVE_DOC_STATUSES),
-        ).first()
-        if existing:
-            # If same doc already in this chat, reject
-            if existing.chat_id == chat_id:
-                raise LimitError(
-                    "DUPLICATE_DOCUMENT",
-                    f"This document is already uploaded in this chat."
-                )
-            # If in another chat, allow (user may want it in multiple contexts)
+    # Duplicate content is intentionally allowed.
 
     doc = Document(
         id=_new_id(),
@@ -305,6 +291,22 @@ def get_chat_doc_count(db: DBSession, chat_id: str) -> int:
         Document.chat_id == chat_id,
         Document.status.in_(ACTIVE_DOC_STATUSES),
     ).scalar() or 0
+
+
+def chat_has_user_content_or_documents(db: DBSession, chat_id: str) -> bool:
+    """True when a chat should appear in history for logged-in users."""
+    has_docs = db.query(func.count(Document.id)).filter(
+        Document.chat_id == chat_id,
+        Document.status == "ready",
+    ).scalar() or 0
+    if has_docs > 0:
+        return True
+
+    has_messages = db.query(func.count(ChatMessage.id)).filter(
+        ChatMessage.chat_id == chat_id,
+        ChatMessage.role.in_(("user", "assistant")),
+    ).scalar() or 0
+    return has_messages > 0
 
 
 def get_user_doc_count(db: DBSession, user_id: str) -> int:

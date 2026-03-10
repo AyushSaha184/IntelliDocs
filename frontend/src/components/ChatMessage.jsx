@@ -1,5 +1,26 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+
+function normalizeStreamingMarkdown(content, isStreaming) {
+    if (!isStreaming || !content) return content || '';
+    let safe = content;
+
+    const fenceCount = (safe.match(/```/g) || []).length;
+    if (fenceCount % 2 !== 0) {
+        safe += '\n```';
+    }
+
+    const inlineMathCount = (safe.match(/\$/g) || []).length;
+    if (inlineMathCount % 2 !== 0) {
+        safe += '$';
+    }
+
+    return safe;
+}
 
 export default function ChatMessage({ message }) {
     const [isCopied, setIsCopied] = useState(false);
@@ -107,7 +128,13 @@ export default function ChatMessage({ message }) {
                     ) : (
                         <>
                             <div className="prose prose-invert max-w-none text-xs sm:text-sm pr-1">
-                                <ReactMarkdown>{message.content}</ReactMarkdown>
+                                <ReactMarkdown
+                                    remarkPlugins={[remarkGfm, remarkMath]}
+                                    rehypePlugins={[rehypeKatex]}
+                                    skipHtml
+                                >
+                                    {normalizeStreamingMarkdown(message.content, message.isStreaming)}
+                                </ReactMarkdown>
                                 {message.isStreaming && (
                                     <span className="inline-block w-0.5 h-4 bg-white/70 ml-0.5 animate-pulse align-middle" />
                                 )}

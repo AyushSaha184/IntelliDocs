@@ -91,7 +91,7 @@ export async function listMessages(chatId, limit = 200, offset = 0, sessionId = 
     return response.json();
 }
 
-export async function uploadDocument(file, chatId = null, sessionId = null) {
+export async function uploadDocument(file, chatId = null, sessionId = null, options = {}) {
     const formData = new FormData();
     formData.append('file', file);
     if (chatId) formData.append('chat_id', chatId);
@@ -102,6 +102,7 @@ export async function uploadDocument(file, chatId = null, sessionId = null) {
         method: 'POST',
         headers,
         body: formData,
+        signal: options.signal,
     });
 
     if (!response.ok) {
@@ -114,13 +115,41 @@ export async function uploadDocument(file, chatId = null, sessionId = null) {
     return response.json();
 }
 
+export async function listChatDocuments(chatId, sessionId = null) {
+    const headers = await buildAuthHeaders();
+    const sessionParam = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const response = await fetch(`${BASE_URL}/api/chats/${chatId}/documents${sessionParam}`, { headers });
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to list chat documents');
+    }
+    return response.json();
+}
+
+export async function clearChatFiles(chatId, sessionId = null) {
+    const headers = await buildAuthHeaders();
+    const sessionParam = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const response = await fetch(`${BASE_URL}/api/chats/${chatId}/clear-files${sessionParam}`, {
+        method: 'POST',
+        headers,
+    });
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to clear chat files');
+    }
+    return response.json();
+}
+
 export async function checkStatus(chatId, sessionId = null) {
     const headers = await buildAuthHeaders();
     const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
     const response = await fetch(`${BASE_URL}/api/status/${chatId}${qs}`, { headers });
     if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || `Status check failed (${response.status})`);
+        const err = new Error(error.detail || `Status check failed (${response.status})`);
+        err.status = response.status;
+        err.error_code = error.error_code;
+        throw err;
     }
     return response.json();
 }

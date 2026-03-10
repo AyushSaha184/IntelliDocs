@@ -1,8 +1,10 @@
 """FastAPI routes for session-aware RAG backend."""
 
+import shutil
 import threading
 from typing import Optional, List
 from pathlib import Path
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
@@ -78,6 +80,7 @@ def process_document_async(session_id: str, session_manager):
     Retries the full ingestion up to 2 times on transient failures.
     """
     from backend.database.models import get_session_local
+    from backend.services.chat_service import get_chat_documents, update_document_status
     
     acquired = _processing_semaphore.acquire(timeout=300)  # Wait up to 5 min
     if not acquired:
@@ -112,6 +115,11 @@ def process_document_async(session_id: str, session_manager):
                     chunks_dir=chunks_dir,
                     vector_store_dir=vector_store_dir
                 )
+
+                docs = get_chat_documents(db, session_id)
+                for d in docs:
+                    if d.status == "pending":
+                        update_document_status(db, d.id, "ready")
                 
                 # Success — update status
                 session_manager.update_session_status(
@@ -134,6 +142,10 @@ def process_document_async(session_id: str, session_manager):
         
         # All attempts failed
         logger.error(f"[{session_id[:8]}] Processing failed after {max_attempts} attempts: {last_error}")
+        docs = get_chat_documents(db, session_id)
+        for d in docs:
+            if d.status == "pending":
+                update_document_status(db, d.id, "failed")
         session_manager.update_session_status(
             session_id=session_id,
             status="error",
@@ -143,6 +155,10 @@ def process_document_async(session_id: str, session_manager):
         
     except Exception as e:
         logger.error(f"[{session_id[:8]}] Unexpected error: {e}")
+        docs = get_chat_documents(db, session_id)
+        for d in docs:
+            if d.status == "pending":
+                update_document_status(db, d.id, "failed")
         session_manager.update_session_status(
             session_id=session_id,
             status="error",
@@ -547,12 +563,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
+from sqlalchemy.exc import IntegrityError
 
 from backend.auth.supabase_auth import AuthUser, get_current_user
 from backend.database import get_db
 from backend.services.chat_service import (
     LimitError,
     add_message,
+    chat_has_user_content_or_documents,
     check_and_register_document,
     compute_content_hash,
     create_chat,
@@ -648,6 +666,14 @@ class MessageResponse(BaseModel):
     created_at: str
 
 
+class DocumentResponse(BaseModel):
+    id: str
+    filename: str
+    file_size: int
+    status: str
+    created_at: str
+
+
 class SendMessageRequest(BaseModel):
     role: str = Field("user", pattern="^(user|assistant|system)$")
     content: str = Field(..., min_length=1, max_length=50000)
@@ -718,6 +744,7 @@ def list_chats(
         return {"chats": []}
 
     chats = get_user_chats(db, current_user.id, limit=limit, offset=offset)
+    chats = [c for c in chats if chat_has_user_content_or_documents(db, c.id)]
     return {
         "chats": [
             ChatResponse(
@@ -816,6 +843,82 @@ def list_messages(
     }
 
 
+@chat_router.get("/chats/{chat_id}/documents")
+def list_chat_documents(
+    chat_id: str,
+    session_id: Optional[str] = None,
+    db: DBSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    try:
+        _verify_access(db, chat_id, current_user, session_id=session_id)
+    except LimitError as e:
+        return _error_response(403, e.code, e.message)
+
+    docs = get_chat_documents(db, chat_id)
+    docs_sorted = sorted(docs, key=lambda d: d.created_at)
+    return {
+        "documents": [
+            DocumentResponse(
+                id=d.id,
+                filename=d.filename,
+                file_size=d.file_size or 0,
+                status=d.status,
+                created_at=d.created_at.isoformat(),
+            )
+            for d in docs_sorted
+        ]
+    }
+
+
+@chat_router.post("/chats/{chat_id}/clear-files")
+def clear_chat_files(
+    chat_id: str,
+    session_id: Optional[str] = None,
+    db: DBSession = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    from backend.database.models import Document, Session as LegacySession
+    from backend.services.rag_service_session import clear_session_handler
+    from backend.services.session_service import get_session_manager
+
+    try:
+        _verify_access(db, chat_id, current_user, session_id=session_id)
+    except LimitError as e:
+        return _error_response(403, e.code, e.message)
+
+    # Mark all active documents deleted so chat-local limits are freed.
+    docs = db.query(Document).filter(
+        Document.chat_id == chat_id,
+        Document.status.in_(("pending", "ready", "failed")),
+    ).all()
+    cleared_count = 0
+    for d in docs:
+        d.status = "deleted"
+        d.updated_at = datetime.utcnow()
+        cleared_count += 1
+
+    # Best-effort cleanup of in-memory retrievers and on-disk/session storage.
+    clear_session_handler(chat_id)
+    session_manager = get_session_manager()
+    session_manager._storage.delete_session(chat_id)
+
+    session_dir = session_manager._get_session_dir(chat_id)
+    for subdir in ("documents", "chunks", "vector_store"):
+        target = session_dir / subdir
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True, exist_ok=True)
+
+    # Reset legacy processing row if present.
+    legacy = db.query(LegacySession).filter(LegacySession.session_id == chat_id).first()
+    if legacy:
+        db.delete(legacy)
+
+    db.commit()
+    return {"chat_id": chat_id, "cleared_documents": cleared_count, "status": "cleared"}
+
+
 @chat_router.post("/chats/{chat_id}/messages", response_model=MessageResponse)
 def post_message(
     chat_id: str,
@@ -894,6 +997,19 @@ async def upload_with_chat(
     except LimitError as e:
         db.rollback()
         return _error_response(429 if "LIMIT" in e.code else 409, e.code, e.message)
+    except IntegrityError:
+        # Backward-compatibility path when legacy unique indexes still exist.
+        db.rollback()
+        doc = check_and_register_document(
+            db,
+            chat_id=chat_id,
+            user_id=None if is_guest else current_user.id,
+            session_id=session_id if is_guest else None,
+            is_guest=is_guest,
+            filename=file.filename,
+            file_size=file_size,
+            content_hash=None,
+        )
 
     try:
         session_manager = get_session_manager()
@@ -906,9 +1022,6 @@ async def upload_with_chat(
         session_manager._storage.save_document(effective_session, file.filename, contents)
         update_document_status(db, doc.id, "pending")
         db.commit()
-    except FileExistsError:
-        db.rollback()
-        return _error_response(409, "DUPLICATE_DOCUMENT", f"File {file.filename} already exists in this chat")
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
@@ -1111,6 +1224,14 @@ def get_chat_status(
     if not legacy:
         return _error_response(404, "CHAT_NOT_FOUND", "No processing session found for this chat")
 
+    docs = get_chat_documents(db, chat_id)
+    total_documents = len(docs)
+    ready_documents = sum(1 for d in docs if d.status == "ready")
+    failed_documents = sum(1 for d in docs if d.status == "failed")
+    pending_documents = sum(1 for d in docs if d.status == "pending")
+    processed_documents = ready_documents + failed_documents
+    failed_files = [d.filename for d in docs if d.status == "failed"]
+
     return {
         "chat_id": chat_id,
         "session_id": chat_id,
@@ -1120,4 +1241,12 @@ def get_chat_status(
         "last_accessed": legacy.last_accessed.isoformat() if legacy.last_accessed else "",
         "chunks_count": legacy.chunks_count,
         "error_message": legacy.error_message,
+        "document_progress": {
+            "total": total_documents,
+            "processed": processed_documents,
+            "ready": ready_documents,
+            "failed": failed_documents,
+            "pending": pending_documents,
+        },
+        "failed_files": failed_files,
     }

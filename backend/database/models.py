@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Index,
+    text,
     create_engine,
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -187,7 +188,24 @@ def get_session_local():
 
 def init_db():
     """Initialize database tables."""
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    _drop_document_dedupe_indexes(engine)
+
+
+def _drop_document_dedupe_indexes(engine):
+    """Remove legacy dedupe indexes so same document can be uploaded multiple times."""
+    statements = [
+        "DROP INDEX IF EXISTS uq_documents_active_user_hash",
+        "DROP INDEX IF EXISTS uq_documents_active_session_hash",
+    ]
+
+    with engine.begin() as conn:
+        for stmt in statements:
+            try:
+                conn.execute(text(stmt))
+            except Exception as exc:
+                print(f"[DB] Warning: could not drop dedupe index: {exc}")
 
 
 def get_db():

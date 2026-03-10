@@ -1,6 +1,6 @@
 # IntelliDocs - Enterprise-Scale RAG Assistant
 
-IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system that turns local document repositories into interactive knowledge bases. It features a **Multi-Agent Orchestration Pipeline** that routes every query through a Planner → Router → Retriever → Synthesizer → Validator chain, a **Low-Latency Streaming Pipeline** with asynchronous post-stream safety validation, a **Hybrid Search Pipeline** combining dense vector search and BM25 sparse retrieval, and a **Human-in-the-Loop Review System** for high-confidence deployments.
+IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system that turns local document repositories into interactive knowledge bases. It features a **Multi-Agent Orchestration Pipeline** that routes every query through a Planner → Router → Retriever → Synthesizer → Validator chain, a **Low-Latency Streaming Pipeline** with asynchronous post-stream safety validation, a **Hybrid Search Pipeline** combining dense vector search and BM25 sparse retrieval, a **Human-in-the-Loop Review System** for high-confidence deployments, and a **full authentication layer** via Supabase (Google OAuth + email/password) with guest access.
 
 **[🚀 Live Demo](https://intelli-docs-five.vercel.app)**
 
@@ -25,9 +25,10 @@ IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RA
   - [Hybrid Search Pipeline](#hybrid-search-pipeline)
   - [Parallel Processing Pipeline](#parallel-processing-pipeline)
   - [Extension-Aware Chunking](#extension-aware-chunking)
-  - [Three-Level Caching](#three-level-caching)
+  - [Four-Level Caching](#four-level-caching)
   - [Metadata Enrichment](#metadata-enrichment)
   - [Session Isolation](#session-isolation)
+  - [Authentication & Multi-Chat](#authentication--multi-chat)
 - [Architecture](#architecture)
 - [API Reference](#api-reference)
 - [Requirements](#requirements)
@@ -146,11 +147,16 @@ Specialized for:
 
 ### 🏢 Enterprise Ready
 
-- **Session Isolation**: Each user upload creates its own document store, FAISS index, BM25 index, and chunk metadata directory — zero cross-user data leakage.
-- **FastAPI Backend**: Robust, session-aware REST API with concurrency control (max 5 concurrent ingest jobs), disk-space guard (20MB per file), and background lifecycle management.
-- **Auto Cleanup**: `CleanupScheduler` runs every 10 minutes — deletes sessions older than 2 hours or idle for 1+ hours.
-- **Modern UI**: React 19 + Vite frontend with multi-file upload, processing status polling, Markdown rendering, collapsible source citations, and auto-scroll.
-- **Document Parse Cache**: `data/.parse_cache/` stores intermediate parse results to avoid re-parsing unchanged files.
+- **Session Isolation**: Each user upload creates its own document store, FAISS/Qdrant index, BM25 index, and chunk metadata directory — zero cross-user data leakage.
+- **FastAPI Backend**: Robust, session-aware REST API with concurrency control (max 5 concurrent ingest jobs), disk-space guard (20MB per file, 4GB minimum free), and background lifecycle management.
+- **Dual Vector Backend**: Automatically selects FAISS (local/Docker) or Qdrant (managed/remote) at startup based on configuration. Override with `VECTOR_BACKEND=faiss|qdrant`.
+- **Storage Abstraction**: `StorageService` supports both local filesystem and Supabase Storage backends for uploaded files — same API, swappable at runtime.
+- **Cascade Deletes**: `CascadeService` atomically removes chats, documents, messages, and vector store data together. A background `CleanupWorker` processes delete jobs and sweeps TTL-expired guest sessions on a 60-second cycle.
+- **Multi-Chat Persistence**: Logged-in users get a persistent sidebar of named chats with full message and document history, synced across browser tabs via `BroadcastChannel`.
+- **Guest Isolation**: Guests get a fresh isolated chat context on every "New Chat" — no data leakage between guest sessions. Limits: 5 documents per chat, no chat history.
+- **Document Upload Quotas**: Guest — 5 docs per chat; Logged-in — 15 docs per chat, 40 docs per account. Enforced atomically at the database level with `SELECT ... FOR UPDATE`.
+- **Auto Cleanup**: Background worker runs every 60 seconds — deletes TTL-expired guest sessions and processes queued cascade delete jobs.
+- **Modern UI**: React 19 + Vite frontend with multi-file upload, per-document processing progress bar, failed-document indicators, Markdown rendering, collapsible source citations, auto-scroll, and a **Report Bug** button.
 
 ## Project Structure
 
@@ -158,74 +164,115 @@ Specialized for:
 .
 ├── backend/
 │   ├── api/
-│   │   └── routes.py               # FastAPI routes (upload, ask, status, process, health)
+│   │   └── routes.py               # All FastAPI routes: upload, ask, status, process, health,
+│   │                               #   chat CRUD, messages, documents, guest sessions, review,
+│   │                               #   eval, stress-test (merged from chat_routes.py)
+│   ├── auth/
+│   │   └── supabase_auth.py        # Supabase JWT verification; anonymous guest passthrough
 │   ├── database/
-│   │   └── models.py               # SQLAlchemy session model; PostgreSQL with SQLite fallback
+│   │   ├── models.py               # SQLAlchemy models: Session, Chat, ChatMessage, Document,
+│   │   │                           #   CleanupJob; PostgreSQL with SQLite fallback
+│   │   └── migrations/             # Alembic migration scripts
 │   ├── rag/
-│   │   ├── IngestSession.py        # Session ingestion: parallel load + BM25 build + FAISS store
-│   │   ├── Embedder.py             # Embedding service wrapper
-│   │   └── retriever.py            # Retriever wrapper
+│   │   ├── IngestSession.py        # Session ingestion: parallel file load + retry embeddings
+│   │   │                           #   + BM25 build + FAISS/Qdrant store + progress tracking
+│   │   ├── Ingest.py               # Global CLI ingestion pipeline (--build path)
+│   │   ├── Embedder.py             # Embedding service wrapper (session path)
+│   │   ├── Generator.py            # LLM generation wrapper (session path)
+│   │   ├── retriever.py            # Retriever wrapper (session path)
+│   │   └── Vector_Store.py         # FAISS/Qdrant write helper (session path)
 │   ├── services/
-│   │   ├── session_service.py      # Session creation, isolation, and lifecycle management
+│   │   ├── session_service.py      # Session creation, isolation, status, and lifecycle
+│   │   ├── chat_service.py         # Chat/message/document CRUD; quota enforcement
+│   │   │                           #   (guest: 5 docs, per-chat: 15, account: 40)
+│   │   ├── cascade_service.py      # Atomic cascade deletes + background CleanupWorker (TTL sweep)
+│   │   ├── storage_service.py      # Storage abstraction: LocalStorageService / SupabaseStorageService
 │   │   ├── rag_service_session.py  # Session-scoped QueryHandler with shared LLM/reranker singletons
-│   │   ├── cleanup_scheduler.py    # Background session + cache expiry scheduler
+│   │   ├── rag_service.py          # Global index QueryHandler (CLI / legacy path)
+│   │   ├── cleanup_scheduler.py    # Legacy cleanup scheduler (session TTL expiry)
 │   │   └── cleanup_storage.py      # Manual storage cleanup CLI utility
-│   └── main.py                     # FastAPI app entrypoint (lifespan, CORS, static serving)
+│   └── main.py                     # FastAPI app entrypoint (lifespan, CORS, router registration)
 ├── config/
-│   └── config.py                   # Central environment-aware configuration
+│   └── config.py                   # Central environment-aware configuration (all providers,
+│                                   #   DB, Qdrant, Supabase, vector backend auto-selection)
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── ChatInput.jsx        # Message input with multi-file upload and process trigger
-│   │   │   ├── ChatMessage.jsx      # Message bubble with Markdown, source citations, copy button
+│   │   │   ├── App.jsx              # Main app: auth state, chat state, upload/process/ask flows,
+│   │   │   │                        #   BroadcastChannel cross-tab sync, Report Bug dropdown
+│   │   │   ├── Sidebar.jsx          # Chat history sidebar with rename/delete (logged-in users)
+│   │   │   ├── ChatInput.jsx        # Message input with multi-file drop zone and process trigger
+│   │   │   ├── ChatMessage.jsx      # Message bubble: Markdown, source citations, copy button,
+│   │   │   │                        #   grounding badge, streaming indicator
 │   │   │   ├── FileUpload.jsx       # File picker with type + size validation
 │   │   │   ├── FilePreviews.jsx     # Pre-upload file preview and batch upload UI
-│   │   │   └── UploadedFiles.jsx    # Post-upload file status with collapsible panel
+│   │   │   └── UploadedFiles.jsx    # Post-upload panel: per-doc progress bar, failed indicators,
+│   │   │                            #   collapsible on completion
 │   │   ├── services/
-│   │   │   └── api.js               # API client (upload, process, status, ask, health)
-│   │   └── App.jsx                  # Main app with session state and polling logic
+│   │   │   ├── api.js               # API client: guest session, chat CRUD, upload, process,
+│   │   │   │                        #   status, ask stream, health
+│   │   │   └── supabase.js          # Supabase client initialisation
+│   │   └── main.jsx                 # Vite entry point
 │   └── index.html
 ├── src/
 │   ├── agents/
-│   │   ├── Orchestrator.py         # AgentOrchestrator: runs planner → router → retrieval → synthesis → validation
-│   │   ├── Planner.py              # QueryPlanner: LLM-based query classification + sub-query decomposition
-│   │   ├── Router.py               # ConditionalRouter: routes to DIRECT_LLM / SINGLE_AGENT / MULTI_AGENT / HUMAN_REVIEW
-│   │   ├── RetrieverAgent.py       # Agent wrapper around RAGRetriever
-│   │   ├── SynthesizerAgent.py     # Context-to-answer generation agent
-│   │   ├── ValidatorAgent.py       # Groundedness / hallucination checker
-│   │   ├── HumanValidation.py      # Gatekeeper + ReviewManager (escalation, approval, correction)
+│   │   ├── Orchestrator.py         # AgentOrchestrator: planner → router → retrieval → synthesis
+│   │   │                           #   → validation; step cap; human-approved answer cache
+│   │   ├── Planner.py              # QueryPlanner: LLM-based classification (6 types) + sub-query
+│   │   │                           #   decomposition; heuristic fallback
+│   │   ├── Router.py               # ConditionalRouter: DIRECT_LLM / SINGLE_AGENT /
+│   │   │                           #   MULTI_AGENT / HUMAN_REVIEW
+│   │   ├── RetrieverAgent.py       # Agent wrapper around RAGRetriever; retrieval cache check
+│   │   ├── SynthesizerAgent.py     # Context-to-answer generation; KV prompt caching hints
+│   │   ├── ValidatorAgent.py       # Groundedness / hallucination checker (secondary LLM)
+│   │   ├── HumanValidation.py      # Gatekeeper + ReviewManager: sensitivity, groundedness,
+│   │   │                           #   confidence checks; escalation, approve, correct workflow
 │   │   ├── Tools.py                # Agent tool definitions (search, summarise, etc.)
 │   │   └── BaseAgent.py            # Abstract base with AgentTask / AgentResult dataclasses
 │   ├── evaluation/
-│   │   └── Evaluator.py            # Per-query metrics (precision, recall, latency, route)
+│   │   └── Evaluator.py            # Per-query metrics: precision, recall, latency, route;
+│   │                               #   rolling summary API
 │   ├── modules/
-│   │   ├── Loader.py               # Multi-format document loader (PDF streaming, OCR fallback, CSV)
-│   │   ├── Chunking.py             # Extension-aware chunker (8 strategies)
-│   │   ├── DocumentParser.py       # Structure analyzer with parse caching
-│   │   ├── Embeddings.py           # Embedding service (NVIDIA/Gemini/HF/local) + retry
-│   │   ├── VectorStore.py          # FAISS vector store (Flat/IVF/HNSW, atomic save, O(1) lookup)
-│   │   ├── Retriever.py            # Hybrid retriever: dense + BM25 + RRF + NVIDIA reranking
-│   │   ├── QueryGeneration.py      # QueryHandler: retrieval → LLM → cache (legacy / global index)
-│   │   ├── QueryCache.py           # Session-scoped retrieval + LLM response caches
-│   │   ├── MetadataEnricher.py     # Async background enricher (summaries, keywords, HyDE questions)
-│   │   ├── LLM.py                  # Provider-agnostic LLM layer (Gemini, HuggingFace, NVIDIA, LM Studio)
-│   │   └── ParallelPipeline.py     # Three-stage streaming pipeline (threads → processes → API workers)
+│   │   ├── Loader.py               # Multi-format document loader: PDF streaming + OCR fallback,
+│   │   │                           #   python-docx / unstructured DOCX, streaming CSV
+│   │   ├── Chunking.py             # Extension-aware chunker (8 strategies); 50K-entry token cache
+│   │   ├── DocumentParser.py       # Structure analyzer with parse result caching
+│   │   ├── Embeddings.py           # Provider-agnostic embedding service (NVIDIA / Gemini /
+│   │   │                           #   HF-Inference / LM Studio / local); exponential backoff retry
+│   │   ├── VectorStore.py          # FAISS vector store (Flat/IVF/HNSW); O(1) reverse ID map;
+│   │   │                           #   atomic file saves; metadata archive on overwrite
+│   │   ├── QdrantStore.py          # Qdrant session store: upsert, search, delete-by-session;
+│   │   │                           #   auto-creates collection; falls back to FAISS on init error
+│   │   ├── Retriever.py            # BM25Retriever + NvidiaReranker + RAGRetriever
+│   │   │                           #   (dense + sparse + RRF + optional rerank)
+│   │   ├── QueryCache.py           # Session-scoped retrieval cache + LLM response cache (SQLite)
+│   │   ├── QueryGeneration.py      # Legacy QueryHandler for global index / CLI path
+│   │   ├── MetadataEnricher.py     # Async background enricher: TF keywords + batched LLM
+│   │   │                           #   summaries + HyDE questions; resumable; semaphore-capped
+│   │   ├── LLM.py                  # Provider-agnostic LLM: Gemini, HuggingFace, NVIDIA,
+│   │   │                           #   LM Studio; strips <think> blocks automatically
+│   │   └── ParallelPipeline.py     # Three-stage streaming pipeline (threads → processes → API)
 │   └── utils/
 │       ├── Logger.py               # Rotating logger with console + file handlers
 │       └── llm_provider.py         # Shared LLM/reranker singleton factory
 ├── data/                           # Runtime data (gitignored)
-│   ├── cache/                      # SQLite caches: embedding, retrieval, LLM
+│   ├── cache/                      # SQLite caches: retrieval, LLM response
 │   ├── .parse_cache/               # Document parse cache (avoids re-parsing unchanged files)
-│   ├── vector_store/               # Global FAISS index + BM25 index (bm25_index.pkl)
-│   ├── documents/                  # Ingested documents (global build)
-│   ├── chunks/                     # Chunk metadata JSON (global build)
-│   └── sessions/                   # Per-session isolated stores
+│   ├── vector_store/               # Global FAISS index + BM25 index (CLI --build path)
+│   ├── documents/                  # Ingested documents (global --build path)
+│   ├── chunks/                     # Chunk metadata JSON (global --build path)
+│   └── sessions/                   # Per-session isolated stores (API path)
+│       └── {session_id}/
+│           ├── documents/          # Session-scoped uploaded files
+│           ├── chunks/             # Session chunk metadata + chunks_metadata_prev.json rollback
+│           └── vector_store/       # Session FAISS/Qdrant index + BM25 index
 ├── logs/                           # Application logs — gitignored
 ├── main.py                         # Unified CLI entrypoint (build / query / api / test modes)
-├── requirements.txt                # Full dev dependencies (includes python-magic-bin for Windows)
-├── requirements-render.txt         # Slim Linux/Docker dependencies (python-magic + libmagic1)
+├── requirements.txt                # Full dev dependencies
+├── requirements-render.txt         # Slim Linux/Docker dependencies (no PyTorch)
 ├── Dockerfile                      # Multi-stage build (Node frontend → Python backend)
 ├── docker-compose.yml              # PostgreSQL + app container orchestration
+├── server.bat                      # Windows one-command launcher
 └── .env.example                    # Environment variable template
 ```
 
@@ -353,11 +400,15 @@ MIN_CHUNKS_TO_RERANK=8              # Only rerank when candidates exceed this
 TOP_K_AFTER_RERANK=5
 
 # ── LLM ────────────────────────────────────────────────────────────────
-LLM_PROVIDER=openrouter              # openrouter | gemini | hf-inference
+LLM_PROVIDER=openrouter              # openrouter | gemini | hf-inference | cerebras
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 LLM_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=1000
+
+# ── Validator / Judge LLM ──────────────────────────────────────────────
+JUDGE_PROVIDER=cerebras              # Provider for ValidatorAgent (fast secondary LLM)
+CEREBRAS_API_KEY=your_cerebras_api_key_here
 
 # ── Metadata Enrichment ────────────────────────────────────────────────
 ENABLE_CHUNK_ENRICHMENT=0            # 1 to enable async post-ingest enrichment
@@ -369,6 +420,25 @@ POSTGRES_PORT=5432
 POSTGRES_DB=rag_db
 POSTGRES_USER=your_db_user
 POSTGRES_PASSWORD=your_db_password
+
+# ── Supabase Auth (optional — required for Google OAuth & email/password login) ──
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+# Set SUPABASE_STORAGE_BUCKET to store uploaded files in Supabase Storage
+# instead of the local filesystem (required for multi-instance / Render deploys)
+SUPABASE_STORAGE_BUCKET=documents
+
+# ── Vector Backend ─────────────────────────────────────────────────────
+VECTOR_BACKEND=auto                  # auto | faiss | qdrant
+# auto: uses qdrant when QDRANT_URL is set and the DB host looks remote, else faiss
+
+# ── Qdrant (optional — for managed vector DB) ──────────────────────────
+QDRANT_URL=https://your-cluster.qdrant.io
+QDRANT_API_KEY=your_qdrant_api_key
+QDRANT_COLLECTION=chunk_embeddings
+QDRANT_DISTANCE=cosine               # cosine | dot | euclid
+QDRANT_TIMEOUT_SECONDS=10
 ```
 
 ### Command-line Flags
@@ -407,7 +477,6 @@ Deploy via `render.yaml` (blueprint auto-configures DB, env vars, and disk):
 Every `POST /ask` request passes through `AgentOrchestrator.run()`, which coordinates a chain of specialized agents:
 
 ![Multi-Agent Orchestration](https://i.postimg.cc/g0YKMJqm/Multi-Agent.png)
-
 
 **Guardrails:**
 
@@ -474,7 +543,7 @@ Auto-detection switches to the parallel pipeline at 11+ documents. Small dataset
 
 ### Three-Level Caching
 
-Retrieval and LLM caches are session-scoped, preventing any cross-user collisions. Cache keys are SHA-256 hashed. The background `CleanupScheduler` evicts stale entries every 10 minutes.
+Retrieval and LLM caches are session-scoped, preventing any cross-user collisions. Cache keys are SHA-256 hashed. The background `CascadeService` `CleanupWorker` evicts stale entries and expired guest sessions on a 60-second cycle.
 
 ### Metadata Enrichment
 
@@ -490,16 +559,58 @@ The enricher is **resumable** — restarting the server picks up from where it l
 
 ### Session Isolation
 
-Each user upload creates a fully isolated session directory:
+Every chat — whether guest or logged-in — gets its own fully isolated `session_id`. No two chats share a vector index, chunk store, or document directory.
+
+**Per-chat on-disk layout:**
 
 ```
 data/sessions/{session_id}/
-    documents/      ← Only this user's uploaded files
-    chunks/         ← Chunk metadata JSON for this session
-    vector_store/   ← FAISS index + BM25 index for this session
+    documents/                       ← Only this chat's uploaded files
+    chunks/                          ← Chunk metadata JSON
+    │   chunks_metadata_prev.json    ← Rollback snapshot (restored on failed re-ingest)
+    vector_store/                    ← FAISS index + BM25 index
+                                       (or Qdrant collection scoped by session_id)
 ```
 
-Shared singletons (LLM, embedding service, reranker) are initialized once at server startup and reused across all sessions. A background `CleanupScheduler` runs every 10 minutes, deleting sessions older than 2 hours or idle for 1+ hours.
+**Logged-in users — persistent multi-chat:**
+
+- Each conversation is a `Chat` DB row (`session_id`, `title`, `version`, `status`, `message_count`, `document_count`).
+- Full message history is stored in `ChatMessage` rows and reloaded when switching chats.
+- Document list per chat is stored in `Document` rows (filename, status, page count, token count).
+- Switching chats in the sidebar loads both the message history and the uploaded-files panel for that chat — state is always authoritative from the DB, never stale local state.
+- Chat titles, message counts, and document counts are shown live in the sidebar.
+- Rename and delete operations are version-guarded (optimistic concurrency, `SELECT ... FOR UPDATE`) to prevent stale-write corruption across tabs.
+- `BroadcastChannel('rag-assistant-chat-sync')` keeps multiple open browser tabs in sync without a websocket.
+
+**Guest users — ephemeral isolation:**
+
+- No sign-in required; a fresh `session_id` UUID is generated per browser tab on first upload.
+- Limit: **5 documents per chat**. Starting "New Chat" always generates a new `session_id`, giving a completely blank vector store and empty message history — no context leaks from previous chats.
+- All guest session data (files, index, DB rows) is deleted on tab close (`beforeunload`) and swept by the background `CleanupWorker` on its 60-second TTL sweep.
+
+**Shared singletons:** LLM, embedding service, and reranker are initialized once at server startup and safely reused across all sessions (read-only operations). The `CleanupWorker` runs every 60 seconds, processing deletion jobs for cascade-deleted chats and evicting TTL-expired guest session data.
+
+### Authentication & Multi-Chat
+
+**Auth Layer** (`backend/auth/supabase_auth.py`):
+
+- Verifies Supabase JWTs on every protected endpoint.
+- Anonymous / guest requests carry a generated `session_id` instead — validated without a real user token.
+- Google OAuth and email/password sign-in are both supported via Supabase.
+
+**Multi-Chat** (logged-in users only):
+
+- Each conversation is a `Chat` row with its own `session_id`, title, version counter, and status.
+- Switching chats loads the full message history and document list from the database.
+- Chat titles, message counts, and document counts are exposed in the sidebar.
+- Rename and delete are version-guarded (optimistic concurrency) to prevent stale-write corruption.
+- `BroadcastChannel('rag-assistant-chat-sync')` keeps multiple open tabs consistent without a websocket.
+
+**Guest Mode**:
+
+- No sign-in required — guests get a randomly generated `session_id` per tab.
+- Limit: **5 documents per chat**. Starting a new chat always creates a fresh isolated context.
+- Guest session data is deleted on tab close (`beforeunload`) and swept by the background worker.
 
 ## Architecture
 
@@ -525,16 +636,29 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 | **Chunking** | `src/modules/Chunking.py` | 8-strategy extension-aware chunker; 50K-entry token cache |
 | **DocumentParser** | `src/modules/DocumentParser.py` | Structure analysis with parse result caching |
 | **Embeddings** | `src/modules/Embeddings.py` | Provider-agnostic embedding service (NVIDIA/Gemini/HF/local); exponential backoff retry |
-| **VectorStore** | `src/modules/VectorStore.py` | FAISS (Flat/IVF/HNSW); O(1) reverse ID map; atomic file saves |
+| **VectorStore** | `src/modules/VectorStore.py` | FAISS (Flat/IVF/HNSW); O(1) reverse ID map; atomic file saves; metadata archive |
+| **QdrantStore** | `src/modules/QdrantStore.py` | Qdrant session-scoped store; upsert, search, delete-by-session; FAISS fallback |
 | **Retriever** | `src/modules/Retriever.py` | `BM25Retriever` + `NvidiaReranker` + `RAGRetriever` (dense+sparse+RRF+rerank) |
-| **QueryCache** | `src/modules/QueryCache.py` | Session-scoped retrieval cache + LLM response cache |
+| **QueryCache** | `src/modules/QueryCache.py` | Session-scoped retrieval cache + LLM response cache (SQLite) |
 | **QueryGeneration** | `src/modules/QueryGeneration.py` | Legacy `QueryHandler` for global index / CLI path |
 | **MetadataEnricher** | `src/modules/MetadataEnricher.py` | Async background enricher: TF keywords + batched LLM summaries + HyDE questions |
 | **LLM** | `src/modules/LLM.py` | Provider-agnostic LLM; strips `<think>` reasoning blocks automatically |
 | **ParallelPipeline** | `src/modules/ParallelPipeline.py` | Three-stage streaming pipeline; standalone helpers for sequential reuse |
 | **Evaluator** | `src/evaluation/` | Per-query metrics: precision, recall, latency, route; rolling summary API |
-| **Backend API** | `backend/` | FastAPI app; session lifecycle; concurrency semaphore; disk guard; cleanup |
-| **Frontend** | `frontend/` | React 19 + Vite SPA; multi-file upload; polling; Markdown rendering; citations |
+
+### Backend Services
+
+| Component | File | Responsibility |
+|---|---|---|
+| **SessionService** | `backend/services/session_service.py` | Session creation, isolation, directory layout, status updates, lifecycle |
+| **ChatService** | `backend/services/chat_service.py` | Chat/message/document CRUD; quota enforcement (guest 5, per-chat 15, account 40) |
+| **CascadeService** | `backend/services/cascade_service.py` | Atomic cascade deletes + `CleanupWorker` (60s cycle, TTL sweep, job queue) |
+| **StorageService** | `backend/services/storage_service.py` | Storage abstraction: `LocalStorageService` / `SupabaseStorageService` |
+| **RagServiceSession** | `backend/services/rag_service_session.py` | Session-scoped `QueryHandler`; shared LLM/reranker singletons |
+| **SupabaseAuth** | `backend/auth/supabase_auth.py` | JWT verification; anonymous guest passthrough |
+| **IngestSession** | `backend/rag/IngestSession.py` | Session ingestion: parallel load + retry embeddings + BM25 + FAISS/Qdrant + progress tracking |
+| **Backend API** | `backend/api/routes.py` | All FastAPI routes: session, chat, guest, ask/stream, review, eval, stress-test |
+| **Frontend** | `frontend/` | React 19 + Vite SPA; Supabase auth; multi-chat sidebar; multi-file upload; progress tracking |
 
 ### Architecture Diagram
 
@@ -546,27 +670,58 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 
 ## API Reference
 
+### Document / Session Endpoints
+
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/upload` | Upload a file; returns `session_id` |
-| `GET` | `/status/{session_id}` | Poll ingestion status (`pending` / `processing` / `ready` / `error`) |
-| `POST` | `/process/{session_id}` | Trigger processing of all uploaded files in a session |
-| `POST` | `/health` | Deep health check (DB, vector store, embedding service) |
-| `POST` | `/ask/stream` | **Streamed** answer via SSE; includes metadata and post-stream validation events |
-| `GET` | `/reviews/pending` | List queries pending human review |
-| `POST` | `/reviews/{id}/approve` | Approve the AI-generated answer for a pending review |
-| `POST` | `/reviews/{id}/correct` | Submit a corrected answer for a pending review |
-| `GET` | `/eval/summary` | Rolling evaluation metrics (precision, recall, latency, route distribution) |
-| `POST` | `/stress-test/{session_id}` | Run adversarial stress tests (requires `ENABLE_STRESS_TEST=1`) |
+| `POST` | `/api/upload` | Upload a file to a session/chat; returns `session_id` + `chat_id` |
+| `GET` | `/api/status/{chat_id}` | Poll processing status; includes `document_progress` (total / processed / ready / failed) |
+| `POST` | `/api/process/{chat_id}` | Trigger background ingestion of all uploaded files |
+| `POST` | `/api/ask` | Non-streamed answer (legacy) |
+| `POST` | `/api/ask/stream` | **Streamed** answer via SSE; post-stream grounding validation events |
+| `GET` | `/api/health` | Deep health check (DB, vector store, LLM status) |
+
+### Chat Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/chats` | Create a new chat (logged-in or guest) |
+| `GET` | `/api/chats` | List all chats for the current user |
+| `PATCH` | `/api/chats/{chat_id}` | Rename a chat (version-guarded) |
+| `DELETE` | `/api/chats/{chat_id}` | Cascade-delete a chat (messages, documents, vector data) |
+| `GET` | `/api/chats/{chat_id}/messages` | Paginated message history |
+| `GET` | `/api/chats/{chat_id}/documents` | List documents in a chat with status |
+| `POST` | `/api/chats/{chat_id}/clear-files` | Remove all documents from a chat without deleting the chat |
+| `POST` | `/api/chats/{chat_id}/ask` | Non-streamed chat query with history |
+| `POST` | `/api/chats/{chat_id}/ask/stream` | **Streamed** chat query with history via SSE |
+
+### Guest Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/guest/session` | Create a guest session UUID |
+| `DELETE` | `/api/guest/session/{session_id}` | Clean up guest session data |
+
+### Review & Evaluation Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/reviews/pending` | List queries pending human review |
+| `POST` | `/api/reviews/{id}/approve` | Approve the AI-generated answer |
+| `POST` | `/api/reviews/{id}/correct` | Submit a corrected answer |
+| `GET` | `/api/eval/summary` | Rolling evaluation metrics (precision, recall, latency, route distribution) |
+| `POST` | `/api/stress-test` | Adversarial stress tests (requires `ENABLE_STRESS_TEST=1`) |
 
 ## Requirements
 
 - Python 3.10+
 - Node.js 20+
 - PostgreSQL (SQLite fallback available for local development)
-- NVIDIA API Key — required for BGE-M3 embeddings; also used for `nv-rerank-qa-mistral-4b:1` reranking
+- NVIDIA API Key — required for BGE-M3 embeddings and optional `nv-rerank-qa-mistral-4b:1` reranking
 - OpenRouter API Key — for LLM responses
-- Cerebras API Key — for high-speed post-stream validation (ValidatorAgent)
+- Cerebras API Key — for high-speed post-stream validation (`ValidatorAgent`)
+- Supabase Project — for Google OAuth + email/password authentication (optional; app works in guest mode without it)
+- Qdrant Cloud or self-hosted — for managed vector storage (optional; defaults to local FAISS)
 - Docker (optional — for containerized deployment)
 - Tesseract (optional — for OCR on scanned PDFs)
 
@@ -604,7 +759,7 @@ This shows a storage breakdown by session and lets you delete old data interacti
 
 **Session Processing Stuck**
 
-If a session stays in `processing` for more than 2 minutes, check `logs/` for embedding API errors. The `CleanupScheduler` will eventually expire stuck sessions after 2 hours.
+If a session stays in `processing` for more than 2 minutes, check `logs/` for embedding API errors. The `CascadeService` `CleanupWorker` will sweep TTL-expired guest sessions. For stuck logged-in sessions, use the `/api/health` endpoint to inspect system state or manually update the session status in the database.
 
 **Enrichment Not Running**
 

@@ -3,11 +3,24 @@ import FileUpload from './FileUpload';
 import FilePreviews from './FilePreviews';
 import UploadedFiles from './UploadedFiles';
 
-export default function ChatInput({ onSend, onUpload, onProcess, disabled, placeholder, uploadedFiles = [], isProcessing = false, isProcessed = false }) {
+export default function ChatInput({
+    onSend,
+    onUpload,
+    onProcess,
+    disabled,
+    placeholder,
+    uploadedFiles = [],
+    isProcessing = false,
+    isProcessed = false,
+    processingProgress = null,
+    clearSignal = 0,
+    onPendingCountChange = () => {},
+}) {
     const [input, setInput] = useState('');
     const [pendingFiles, setPendingFiles] = useState([]);
     const [uploading, setUploading] = useState(false);
     const textareaRef = useRef(null);
+    const abortControllerRef = useRef(null);
 
     useEffect(() => {
         if (textareaRef.current) {
@@ -15,6 +28,19 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
             textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
         }
     }, [input]);
+
+    useEffect(() => {
+        onPendingCountChange(pendingFiles.length);
+    }, [pendingFiles, onPendingCountChange]);
+
+    useEffect(() => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        setUploading(false);
+        setPendingFiles([]);
+    }, [clearSignal]);
 
     const handleSubmit = (e) => {
         e.preventDefault();
@@ -32,7 +58,13 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
     };
 
     const handleFilesSelected = (files) => {
-        setPendingFiles(prev => [...prev, ...files]);
+        const pendingEntries = files.map((file) => ({
+            id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(16).slice(2)}`,
+            file,
+            status: 'queued',
+            error: '',
+        }));
+        setPendingFiles(prev => [...prev, ...pendingEntries]);
     };
 
     const handleRemoveFile = (index) => {
@@ -44,26 +76,39 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
 
         console.log('Starting upload of', pendingFiles.length, 'files');
         setUploading(true);
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
 
         try {
             // Upload all files to the SAME session
             // Track session_id locally since React state updates are async
             let currentSessionId = null;
-            for (const file of pendingFiles) {
-                console.log('Uploading file:', file.name, 'to session:', currentSessionId);
-                const result = await onUpload(file, currentSessionId);
-                console.log('Upload result for', file.name, ':', result);
-                if (result?.session_id) {
-                    currentSessionId = result.session_id;
+            for (const entry of pendingFiles) {
+                if (controller.signal.aborted) break;
+                setPendingFiles(prev => prev.map(item => item.id === entry.id ? { ...item, status: 'uploading', error: '' } : item));
+                try {
+                    console.log('Uploading file:', entry.file.name, 'to session:', currentSessionId);
+                    const result = await onUpload(entry.file, currentSessionId, { signal: controller.signal });
+                    console.log('Upload result for', entry.file.name, ':', result);
+                    if (result?.session_id) {
+                        currentSessionId = result.session_id;
+                    }
+                    setPendingFiles(prev => prev.map(item => item.id === entry.id ? { ...item, status: 'uploaded', error: '' } : item));
+                } catch (error) {
+                    if (error?.name === 'AbortError') throw error;
+                    setPendingFiles(prev => prev.map(item => item.id === entry.id ? { ...item, status: 'failed', error: error?.message || 'Upload failed' } : item));
                 }
             }
 
-            // Clear pending files after successful upload
-            console.log('Uploads complete, clearing pending files');
-            setPendingFiles([]);
+            // Clear only successfully uploaded entries. Keep failed entries visible.
+            setPendingFiles(prev => prev.filter(item => item.status !== 'uploaded'));
         } catch (error) {
+            if (error?.name === 'AbortError') {
+                return;
+            }
             console.error('Upload error in handleUploadAll:', error);
         } finally {
+            abortControllerRef.current = null;
             setUploading(false);
             console.log('Uploading state set to false');
         }
@@ -93,6 +138,7 @@ export default function ChatInput({ onSend, onUpload, onProcess, disabled, place
                     onProcess={onProcess}
                     isProcessing={isProcessing}
                     isProcessed={false}
+                    processingProgress={processingProgress}
                 />
             )}
 
