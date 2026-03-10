@@ -103,7 +103,13 @@ class SafeCalculator:
 _calculator = SafeCalculator()
 
 
-def retrieve_chunks(query: str, top_k: int = 5, session_id: str = "", retriever=None) -> ToolResult:
+def retrieve_chunks(
+    query: str,
+    top_k: int = 5,
+    session_id: str = "",
+    retriever=None,
+    retrieval_options: Optional[Dict[str, Any]] = None,
+) -> ToolResult:
     """Retrieve relevant chunks using the existing RAGRetriever.
 
     Args:
@@ -125,7 +131,10 @@ def retrieve_chunks(query: str, top_k: int = 5, session_id: str = "", retriever=
         )
 
     try:
-        results = retriever.retrieve(query, k=top_k)
+        safe_options = retrieval_options or {}
+        allowed_keys = {"force_rerank", "filters", "candidate_pool_multiplier", "rerank_top_k"}
+        safe_options = {k: v for k, v in safe_options.items() if k in allowed_keys}
+        results = retriever.retrieve(query, k=top_k, **safe_options)
         chunks = [{"text": r.text, "chunk_id": r.chunk_id, "score": 1.0 - r.distance} for r in results]
         
         # Attach enriched metadata from DB (summary, keywords, hypothetical_questions)

@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session as DBSession
 
-from backend.database.chat_models import Chat, ChatMessage, Document, CleanupJob
+from backend.database.models import Chat, ChatMessage, Document, CleanupJob
 from src.utils.Logger import get_logger
 
 logger = get_logger(__name__)
@@ -386,3 +386,4 @@ def get_stale_guest_chats(db: DBSession, max_age_minutes: int = 120) -> List[Cha
         Chat.status == "active",
         Chat.updated_at < cutoff,
     ).all()
+

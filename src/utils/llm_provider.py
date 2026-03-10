@@ -111,11 +111,16 @@ def get_shared_llm() -> Optional[BaseLLM]:
             return _shared_llm
 
         try:
-            api_key = (
-                GEMINI_API_KEY
-                if LLM_PROVIDER.lower() in ["gemini", "google", "google-ai"]
-                else HF_TOKEN
-            )
+            provider_lower = LLM_PROVIDER.lower()
+            if provider_lower in ["gemini", "google", "google-ai"]:
+                api_key = GEMINI_API_KEY
+            elif provider_lower in ["hf", "hf-inference", "huggingface"]:
+                api_key = HF_TOKEN
+            elif provider_lower == "cerebras":
+                api_key = CEREBRAS_API_KEY
+            else:
+                # OpenRouter/default path
+                api_key = None
 
             _shared_llm = create_llm(
                 provider=LLM_PROVIDER,

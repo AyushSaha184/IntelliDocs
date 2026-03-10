@@ -145,7 +145,16 @@ def get_query_handler() -> QueryHandler:
     llm = None
     try:
         # Set the correct API key based on provider
-        api_key = GEMINI_API_KEY if LLM_PROVIDER.lower() in ["gemini", "google", "google-ai"] else HF_TOKEN
+        provider_lower = LLM_PROVIDER.lower()
+        if provider_lower in ["gemini", "google", "google-ai"]:
+            api_key = GEMINI_API_KEY
+        elif provider_lower in ["hf", "hf-inference", "huggingface"]:
+            api_key = HF_TOKEN
+        elif provider_lower == "cerebras":
+            api_key = None
+        else:
+            # OpenRouter/default path reads OPENROUTER_API_KEY in factory.
+            api_key = None
         
         llm = create_llm(
             provider=LLM_PROVIDER,

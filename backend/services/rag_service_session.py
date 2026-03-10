@@ -1,35 +1,24 @@
 """Session-aware RAG service with isolated user sessions."""
 
-from typing import Optional, Dict, Any
 from pathlib import Path
+from typing import Any, Dict, Optional
+import threading
+
+from config.config import LLM_MAX_TOKENS, LLM_TEMPERATURE, USE_RERANKER, VECTOR_BACKEND
+from src.agents.Orchestrator import AgentOrchestrator
+from src.modules.QueryGeneration import QueryHandler, QueryResult
+from src.modules.Retriever import BM25Retriever, RAGRetriever
 from src.modules.VectorStore import FAISSVectorStore
 from src.modules.QdrantStore import QdrantSessionStore
-from src.modules.Retriever import RAGRetriever
-from src.modules.Retriever import BM25Retriever
-from src.modules.QueryGeneration import QueryHandler, QueryResult
-from src.agents.Orchestrator import AgentOrchestrator
+from src.utils.llm_provider import get_shared_embedding_service, get_shared_llm, get_shared_reranker
 from src.utils.Logger import get_logger
-from src.utils.llm_provider import (
-    get_shared_llm,
-    get_shared_reranker,
-    get_shared_embedding_service,
-)
-from config.config import (
-    LLM_TEMPERATURE,
-    LLM_MAX_TOKENS,
-    USE_RERANKER,
-    VECTOR_BACKEND,
-)
-import threading
 
 logger = get_logger(__name__)
 
-# Thread-safe storage for session-specific retrievers and handlers
 _session_retrievers: Dict[str, RAGRetriever] = {}
 _session_handlers: Dict[str, QueryHandler] = {}
 _handlers_lock = threading.Lock()
 
-# Shared Orchestrator instance (stateless, safe to share)
 _orchestrator = AgentOrchestrator()
 
 
@@ -38,13 +27,7 @@ def _get_session_retriever(
     chunks_metadata: Dict[str, Any],
     vector_store_dir: Path,
 ) -> RAGRetriever:
-    """Get or create a retriever for a specific session.
-
-    Caller MUST hold _handlers_lock before entering this function.
-    Both read (_session_retrievers check) and write (insert) happen here;
-    the lock prevents double-construction if two threads race on the same
-    new session_id.
-    """
+    """Get or create a retriever for a specific session."""
     if session_id in _session_retrievers:
         return _session_retrievers[session_id]
 
@@ -76,10 +59,8 @@ def _get_session_retriever(
             dimension=embedding_service.model.dimension,
             index_type="flat",
         )
-
         if not vector_store_dir.exists():
             raise ValueError(f"Vector store not found for session {session_id}")
-
         vector_store.load(str(vector_store_dir))
 
     reranker = get_shared_reranker()
@@ -100,7 +81,7 @@ def _get_session_retriever(
 def get_session_query_handler(
     session_id: str,
     chunks_metadata: Dict[str, Any],
-    vector_store_dir: Path
+    vector_store_dir: Path,
 ) -> QueryHandler:
     """Get or create a query handler for a specific session (legacy fallback)."""
     with _handlers_lock:
@@ -118,7 +99,7 @@ def get_session_query_handler(
             embedding_service=embedding_service,
             llm=llm,
             top_k=5,
-            session_id=session_id
+            session_id=session_id,
         )
 
         _session_handlers[session_id] = handler
@@ -145,13 +126,10 @@ def ask_rag_session(
     top_k: int = 5,
     system_prompt: Optional[str] = None,
     temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None,
+    chat_history: Optional[list] = None,
 ) -> QueryResult:
-    """Process a query for a specific session via the Agent Orchestrator.
-
-    Uses the multi-agent pipeline (Planner → Router → Agents → Orchestrator).
-    Falls back to the legacy QueryHandler if orchestration fails.
-    """
+    """Process a query for a specific session via the Agent Orchestrator."""
     with _handlers_lock:
         retriever = _get_session_retriever(session_id, chunks_metadata, vector_store_dir)
         embedding_service = get_shared_embedding_service()
@@ -166,6 +144,7 @@ def ask_rag_session(
             system_prompt=system_prompt,
             temperature=temperature if temperature is not None else LLM_TEMPERATURE,
             max_tokens=max_tokens or LLM_MAX_TOKENS,
+            chat_history=chat_history,
         )
         logger.info(f"[session] Query complete for session {session_id[:8]}")
         return result
@@ -195,12 +174,9 @@ def ask_rag_session_stream(
     system_prompt=None,
     temperature=None,
     max_tokens=None,
+    chat_history: Optional[list] = None,
 ):
-    """Generator that streams orchestrator events for a session query.
-
-    Yields dicts produced by AgentOrchestrator.run_stream().
-    Each dict has: {"event": str, "data": any}
-    """
+    """Generator that streams orchestrator events for a session query."""
     with _handlers_lock:
         retriever = _get_session_retriever(session_id, chunks_metadata, vector_store_dir)
         embedding_service = get_shared_embedding_service()
@@ -214,4 +190,5 @@ def ask_rag_session_stream(
         system_prompt=system_prompt,
         temperature=temperature if temperature is not None else LLM_TEMPERATURE,
         max_tokens=max_tokens or LLM_MAX_TOKENS,
+        chat_history=chat_history,
     )

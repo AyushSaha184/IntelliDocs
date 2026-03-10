@@ -20,7 +20,7 @@ Flow:
 import re
 import time
 import concurrent.futures
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from src.agents.Planner import QueryPlanner, QueryPlan
 from src.agents.Router import ConditionalRouter, RouteDecision, RouteResult
@@ -73,6 +73,7 @@ class AgentOrchestrator:
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        chat_history: Optional[List[Dict[str, str]]] = None,
     ) -> QueryResult:
         """Execute the full agent pipeline for a query.
 
@@ -129,41 +130,67 @@ class AgentOrchestrator:
                     llm_metadata=cached_llm.get("llm_metadata"),
                 )
 
-        # 2. Plan the query
-        plan = self.planner.plan(query, top_k)
+        # 2. Expand follow-up query using recent history (if provided)
+        normalized_history = self._normalize_chat_history(chat_history)
+        expanded_query = self._expand_follow_up_query(query, normalized_history)
+
+        # 3. Plan and route
+        plan = self.planner.plan(expanded_query, top_k)
         logger.info(f"Query plan: type={plan.query_type}, multi_hop={plan.needs_multi_hop}")
 
-        # 3. Route
         route = self.router.route(plan)
         logger.info(f"Route decision: {route.decision.value}")
 
-        # Adjust top_k if router suggests
         effective_k = route.adjusted_top_k or top_k
 
         # 4. Execute based on route
-        # Use decomposed query [0] for single agent to allow LLM typo corrections
-        operative_query = plan.decomposed_queries[0] if plan and plan.decomposed_queries else query
-
+        operative_query = plan.decomposed_queries[0] if plan and plan.decomposed_queries else expanded_query
         if route.decision == RouteDecision.DIRECT_LLM:
             return self._handle_trivial(operative_query, session_id)
 
         elif route.decision == RouteDecision.SINGLE_AGENT:
             return self._handle_single_agent(
-                operative_query, retriever, session_id, effective_k,
-                system_prompt, temperature, max_tokens, start_time,
+                query,
+                operative_query,
+                retriever,
+                session_id,
+                effective_k,
+                system_prompt,
+                temperature,
+                max_tokens,
+                start_time,
+                retrieval_options=route.retrieval_options,
+                synthesis_style=route.synthesis_style,
             )
 
         elif route.decision == RouteDecision.MULTI_AGENT:
             return self._handle_multi_agent(
-                query, plan, retriever, session_id, effective_k,
-                system_prompt, temperature, max_tokens, start_time,
+                query,
+                plan,
+                retriever,
+                session_id,
+                effective_k,
+                system_prompt,
+                temperature,
+                max_tokens,
+                start_time,
+                retrieval_options=route.retrieval_options,
             )
 
         else:
             # Fallback: single agent
             return self._handle_single_agent(
-                operative_query, retriever, session_id, effective_k,
-                system_prompt, temperature, max_tokens, start_time,
+                query,
+                operative_query,
+                retriever,
+                session_id,
+                effective_k,
+                system_prompt,
+                temperature,
+                max_tokens,
+                start_time,
+                retrieval_options=route.retrieval_options,
+                synthesis_style=route.synthesis_style,
             )
 
     def _handle_trivial(self, query: str, session_id: str) -> QueryResult:
@@ -204,78 +231,88 @@ class AgentOrchestrator:
             )
 
     def _handle_single_agent(
-        self, query, retriever, session_id, top_k,
-        system_prompt, temperature, max_tokens, start_time,
+        self,
+        original_query,
+        retrieval_query,
+        retriever,
+        session_id,
+        top_k,
+        system_prompt,
+        temperature,
+        max_tokens,
+        start_time,
+        retrieval_options: Optional[Dict[str, Any]] = None,
+        synthesis_style: Optional[str] = None,
     ) -> QueryResult:
-        """Handle factual/simple queries — retrieve → synthesize → validate."""
+        """Handle factual/simple queries - retrieve -> synthesize -> validate."""
 
-        # Step 1: Retrieve
         task = AgentTask(
-            query=query, top_k=top_k, session_id=session_id, retriever=retriever,
+            query=retrieval_query,
+            top_k=top_k,
+            session_id=session_id,
+            retriever=retriever,
+            retrieval_options=retrieval_options or {},
         )
         retrieval_result = self.retriever_agent.run(task)
 
         if retrieval_result.error or not retrieval_result.retrieved_chunks:
-            logger.warning(f"[orchestrator] Single-agent: retrieval returned 0 chunks or error: {retrieval_result.error}")
+            logger.warning(
+                f"[orchestrator] Single-agent: retrieval returned 0 chunks or error: {retrieval_result.error}"
+            )
             return QueryResult(
-                query=query,
+                query=original_query,
                 retrieved_chunks=[],
                 metadata=[],
                 llm_response="I couldn't find relevant information to answer this question.",
             )
 
-        # Check if should escalate (low confidence)
         avg_score = retrieval_result.confidence
         if self.router.should_escalate_to_human(avg_score):
             logger.info(f"Low confidence ({avg_score:.3f}), adding warning")
 
-        # Cache retrieval results
-        self._cache_retrieval(session_id, query, top_k, retrieval_result)
+        self._cache_retrieval(session_id, original_query, top_k, retrieval_result)
 
-        # Step 2: Synthesize (with two-stage context compression)
-        # char_budget = 4 chars per token (rough estimate for TOKEN_BUDGET)
         char_budget = self.TOKEN_BUDGET * 4
         compressed_chunks = self._compress_context(retrieval_result.retrieved_chunks, char_budget)
         if len(compressed_chunks) < len(retrieval_result.retrieved_chunks):
-            logger.debug(f"[orchestrator] Context compressed: {len(retrieval_result.retrieved_chunks)} → {len(compressed_chunks)} chunks")
+            logger.debug(
+                f"[orchestrator] Context compressed: {len(retrieval_result.retrieved_chunks)} -> {len(compressed_chunks)} chunks"
+            )
             retrieval_result.retrieved_chunks = compressed_chunks
 
         synth_task = AgentTask(
-            query=query,
+            query=self._build_synthesis_query(original_query, synthesis_style),
             previous_results=[retrieval_result],
             session_id=session_id,
         )
         synthesis_result = self.synthesizer_agent.run(synth_task)
 
-        # Step 3: Validate (conditional — only when quality is uncertain)
         run_validator = (
             avg_score < self.VALIDATOR_CONFIDENCE_THRESHOLD
             or len(synthesis_result.answer) > self.VALIDATOR_ANSWER_LEN_THRESHOLD
         )
         if run_validator:
-            logger.info(f"[orchestrator] Running ValidatorAgent (conf={avg_score:.2f}, ans_len={len(synthesis_result.answer)})")
+            logger.info(
+                f"[orchestrator] Running ValidatorAgent (conf={avg_score:.2f}, ans_len={len(synthesis_result.answer)})"
+            )
             validate_task = AgentTask(
-                query=query,
+                query=original_query,
                 previous_results=[synthesis_result],
                 session_id=session_id,
             )
             validation_result = self.validator_agent.run(validate_task)
         else:
-            logger.debug(f"[orchestrator] Skipping ValidatorAgent (conf={avg_score:.2f} >= {self.VALIDATOR_CONFIDENCE_THRESHOLD}, ans_len={len(synthesis_result.answer)})")
-            # Pass synthesis result through with its confidence
+            logger.debug(
+                f"[orchestrator] Skipping ValidatorAgent (conf={avg_score:.2f} >= {self.VALIDATOR_CONFIDENCE_THRESHOLD}, ans_len={len(synthesis_result.answer)})"
+            )
             validation_result = synthesis_result
 
-        # Build QueryResult
         elapsed = time.time() - start_time
         logger.info(f"Single-agent pipeline completed in {elapsed:.2f}s")
 
-        result = self._build_query_result(query, validation_result, retrieval_result, "single_agent")
-
-        # Cache LLM result
-        self._cache_llm(session_id, query, result)
-
+        result = self._build_query_result(original_query, validation_result, retrieval_result, "single_agent")
+        self._cache_llm(session_id, original_query, result)
         return result
-
     def run_stream(
         self,
         query: str,
@@ -286,18 +323,9 @@ class AgentOrchestrator:
         system_prompt=None,
         temperature=None,
         max_tokens=None,
+        chat_history: Optional[List[Dict[str, str]]] = None,
     ):
-        """Streaming version of run().
-
-        Yields SSE-compatible dicts. Retrieval + planning are performed
-        synchronously first (they are fast). Synthesis is streamed token-by-
-        token. Validation runs *after* the last token and emits a final event.
-
-        Yields:
-            dict with keys:
-                event: "chunk" | "metadata" | "success" | "warning" | "error"
-                data:  event payload (str or dict)
-        """
+        """Streaming version of run()."""
         import time as _time
 
         start_time = _time.time()
@@ -306,25 +334,26 @@ class AgentOrchestrator:
         if len(query) > self.MAX_QUERY_CHARS:
             query = query[:self.MAX_QUERY_CHARS] + "... [query truncated for safety]"
 
-        # 1. Plan
-        plan = self.planner.plan(query, top_k)
+        normalized_history = self._normalize_chat_history(chat_history)
+        expanded_query = self._expand_follow_up_query(query, normalized_history)
 
-        # 2. Route
+        plan = self.planner.plan(expanded_query, top_k)
         route = self.router.route(plan)
         effective_k = route.adjusted_top_k or top_k
-        operative_query = plan.decomposed_queries[0] if plan and plan.decomposed_queries else query
+        operative_query = plan.decomposed_queries[0] if plan and plan.decomposed_queries else expanded_query
 
         if route.decision.value == "direct_llm":
-            # For trivial queries just emit the answer as a single chunk (no streaming needed)
             result = self._handle_trivial(operative_query, session_id)
             yield {"event": "chunk", "data": result.llm_response or ""}
             yield {"event": "success", "data": {"grounded": True, "confidence": 1.0}}
             return
 
-        # 3. Retrieval (always synchronous — fast NN lookup)
         task = AgentTask(
-            query=operative_query, top_k=effective_k,
-            session_id=session_id, retriever=retriever,
+            query=operative_query,
+            top_k=effective_k,
+            session_id=session_id,
+            retriever=retriever,
+            retrieval_options=route.retrieval_options,
         )
         retrieval_result = self.retriever_agent.run(task)
 
@@ -332,7 +361,6 @@ class AgentOrchestrator:
             yield {"event": "error", "data": "I couldn't find relevant information to answer this question."}
             return
 
-        # Emit metadata (sources) before text starts so UI can show them early
         yield {
             "event": "metadata",
             "data": {
@@ -344,14 +372,11 @@ class AgentOrchestrator:
 
         self._cache_retrieval(session_id, query, top_k, retrieval_result)
 
-        # Context compression (cheap truncation only — no LLM overhead in stream path)
         char_budget = self.TOKEN_BUDGET * 4
-        compressed = self._compress_context(retrieval_result.retrieved_chunks, char_budget)
-        retrieval_result.retrieved_chunks = compressed
+        retrieval_result.retrieved_chunks = self._compress_context(retrieval_result.retrieved_chunks, char_budget)
 
-        # 4. Stream synthesis
         synth_task = AgentTask(
-            query=query,
+            query=self._build_synthesis_query(query, route.synthesis_style),
             previous_results=[retrieval_result],
             session_id=session_id,
         )
@@ -370,9 +395,8 @@ class AgentOrchestrator:
                 accumulated_chunks = payload
 
         full_answer = "".join(accumulated_answer)
-
-        # 5. Post-stream validation via Judge LLM
         logger.info(f"[orchestrator:stream] Validating answer ({len(full_answer)} chars)")
+
         synth_result_for_validation = type("_R", (), {
             "answer": full_answer,
             "retrieved_chunks": accumulated_chunks,
@@ -391,7 +415,6 @@ class AgentOrchestrator:
             validation_result = self.validator_agent.run(validate_task)
 
             if validation_result.grounded is False:
-                logger.warning(f"[orchestrator:stream] Validation FAILED — emitting warning")
                 yield {
                     "event": "warning",
                     "data": {
@@ -410,7 +433,6 @@ class AgentOrchestrator:
                 }
         except Exception as e:
             logger.error(f"[orchestrator:stream] Validation error: {e}")
-            # On validator error, still mark as success so the user isn't blocked
             yield {"event": "success", "data": {"grounded": None, "confidence": 0.7}}
 
         elapsed = _time.time() - start_time
@@ -419,6 +441,7 @@ class AgentOrchestrator:
     def _handle_multi_agent(
         self, query, plan, retriever, session_id, top_k,
         system_prompt, temperature, max_tokens, start_time,
+        retrieval_options: Optional[Dict[str, Any]] = None,
     ) -> QueryResult:
         """Handle complex queries — multi-hop retrieval + synthesis + validation."""
 
@@ -441,6 +464,7 @@ class AgentOrchestrator:
             logger.info(f"[orchestrator] Sub-query {i+1}/{len(sub_queries)}: '{sub_query[:60]}'")
             task = AgentTask(
                 query=sub_query, top_k=top_k, session_id=session_id, retriever=retriever,
+                retrieval_options=retrieval_options or {},
             )
             return self.retriever_agent.run(task)
 
@@ -541,6 +565,48 @@ class AgentOrchestrator:
             },
         )
 
+    def _normalize_chat_history(self, chat_history: Optional[List[Dict[str, str]]]) -> List[Tuple[str, str]]:
+        """Normalize incoming history payload into (role, content) tuples."""
+        if not chat_history:
+            return []
+        normalized: List[Tuple[str, str]] = []
+        for item in chat_history:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if role in {"user", "assistant", "system"} and content:
+                normalized.append((role, content))
+        return normalized[-6:]
+
+    def _expand_follow_up_query(self, query: str, history: List[Tuple[str, str]]) -> str:
+        """Expand short follow-up prompts with the latest meaningful context."""
+        q = query.strip()
+        follow_up_prefixes = ("what about", "how about", "and", "also", "then", "in that case", "what if")
+        is_short_follow_up = len(q.split()) <= 12 and q.lower().startswith(follow_up_prefixes)
+        if not is_short_follow_up or not history:
+            return q
+
+        prior_user = next((content for role, content in reversed(history) if role == "user"), "")
+        prior_assistant = next((content for role, content in reversed(history) if role == "assistant"), "")
+        anchor = prior_user or prior_assistant
+        if not anchor:
+            return q
+
+        anchor = anchor[:400]
+        expanded = f"{anchor} | Follow-up: {q}"
+        logger.info("[orchestrator] Expanded follow-up query for better retrieval")
+        return expanded
+
+    def _build_synthesis_query(self, query: str, synthesis_style: Optional[str]) -> str:
+        """Inject style hints for synthesis without changing retrieval query semantics."""
+        if synthesis_style == "structured_scenarios":
+            return (
+                "Answer in a structured format with 2-4 clearly labeled scenarios, "
+                "state assumptions, and mention when user context is missing.\\n\\n"
+                f"User query: {query}"
+            )
+        return query
     def _cache_retrieval(self, session_id, query, top_k, retrieval_result):
         """Cache retrieval results."""
         try:

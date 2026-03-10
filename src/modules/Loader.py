@@ -41,10 +41,11 @@ logger = get_logger(__name__)
 MAX_WORKERS = min(multiprocessing.cpu_count() or 4, 64)  # Scale up to 64 on modern systems (optimized for fast SSDs)
 WARNING_SIZE_MB = 50
 BUFFER_SIZE = 65536  # 64KB for file hashing
-MAX_FILE_SIZE_MB = 30  # Skip files over 100MB
+MAX_FILE_SIZE_MB = 30  # Skip files over 30MB
 BATCH_SIZE = 1000  # Process files in batches
 CHECKPOINT_INTERVAL = 500  # Save checkpoint every 500 files
 MEMORY_LIMIT_MB = 512  # Keep processed docs under 512MB in memory
+MAX_IN_MEMORY_DOCS = 10000  # Metadata cache cap for long ingestion runs
 
 # Supported file extensions
 SUPPORTED_EXTENSIONS = {
@@ -122,7 +123,9 @@ class DocumentLoader:
         self.processed_docs: Dict[str, DocumentMetadata] = {}  # Only keep recent docs in memory
         self.hash_index: Set[str] = set()
         self._hash_cache: Dict[str, str] = {}
-        self._db_conn: Optional[psycopg2.extensions.connection] = None
+        self._thread_local = threading.local()
+        self._active_conns: Dict[int, psycopg2.extensions.connection] = {}
+        self._active_conns_lock = threading.Lock()
         self._db_lock = threading.Lock()
         self._processed_count = 0
         self._failed_count = 0
@@ -197,13 +200,16 @@ class DocumentLoader:
             self.use_db = False
     
     def _get_db_connection(self) -> psycopg2.extensions.connection:
-        """Get thread-safe database connection with optimized settings"""
-        if self._db_conn is None or self._db_conn.closed:
-            self._db_conn = psycopg2.connect(
-                **postgres_connect_kwargs(connect_timeout=10)
-            )
-            self._db_conn.autocommit = False
-        return self._db_conn
+        """Get per-thread database connection."""
+        thread_id = threading.get_ident()
+        conn = getattr(self._thread_local, "db_conn", None)
+        if conn is None or conn.closed:
+            conn = psycopg2.connect(**postgres_connect_kwargs(connect_timeout=10))
+            conn.autocommit = False
+            self._thread_local.db_conn = conn
+            with self._active_conns_lock:
+                self._active_conns[thread_id] = conn
+        return conn
     
     def _calculate_file_hash(self, file_path: str) -> str:
         """Fast file hash using first+last chunks only"""
@@ -241,15 +247,16 @@ class DocumentLoader:
             return file_hash in self.hash_index
         
         try:
-            conn = self._get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT 1 FROM hash_index WHERE hash = %s", 
-                (file_hash,)
-            )
-            exists = cursor.fetchone() is not None
-            cursor.close()
-            return exists
+            with self._db_lock:
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT 1 FROM hash_index WHERE hash = %s", 
+                    (file_hash,)
+                )
+                exists = cursor.fetchone() is not None
+                cursor.close()
+                return exists
         except psycopg2.Error as e:
             logger.error(f"PostgreSQL error checking duplicate: {e}")
             return False
@@ -262,6 +269,7 @@ class DocumentLoader:
         if not self.use_db:
             return False
         
+        conn = None
         try:
             with self._db_lock:
                 conn = self._get_db_connection()
@@ -310,6 +318,11 @@ class DocumentLoader:
                 conn.commit()
                 cursor.close()
                 return True
+        except psycopg2.errors.UniqueViolation:
+            # Concurrent workers can race on unique(hash/path); treat as duplicate.
+            if conn:
+                conn.rollback()
+            return False
         except psycopg2.extensions.QueryCanceledError as e:
             logger.error(f"PostgreSQL query timeout (table locked?): {e}")
             logger.error(f"HINT: Clear PostgreSQL tables manually with: DELETE FROM chunks; DELETE FROM hash_index; DELETE FROM documents; DELETE FROM processing_log;")
@@ -481,7 +494,8 @@ class DocumentLoader:
                 return None
             
             # Create metadata object (lightweight)
-            doc_id = f"doc_{hashlib.md5(file_name.encode()).hexdigest()[:8]}"
+            stable_src = f"{Path(file_path).resolve()}::{file_hash}"
+            doc_id = f"doc_{hashlib.sha1(stable_src.encode('utf-8', errors='ignore')).hexdigest()[:16]}"
             metadata = DocumentMetadata(
                 id=doc_id,
                 name=file_name,
@@ -520,12 +534,11 @@ class DocumentLoader:
         
         try:
             docs_path = Path(self.documents_dir)
-            for ext in SUPPORTED_EXTENSIONS:
-                # Use rglob (recursive glob) to find files in current dir and all subdirectories
-                for file_path in docs_path.rglob(f"*{ext}"):
-                    if file_path.is_file():
-                        logger.debug(f"Discovered file: {file_path}")
-                        yield file_path
+            # Single tree walk is faster than one rglob pass per extension.
+            for file_path in docs_path.rglob("*"):
+                if file_path.is_file() and file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    logger.debug(f"Discovered file: {file_path}")
+                    yield file_path
         except Exception as e:
             logger.error(f"Error during file discovery: {e}")
     
@@ -583,9 +596,11 @@ class DocumentLoader:
                         if total_processed % (self.batch_size * 10) == 0:
                             logger.info(f"Progress: {total_processed} files processed, {len(loaded_docs)} loaded")
                     
-                    # Memory management: clear in-memory storage after batch
-                    if len(self.processed_docs) > MEMORY_LIMIT_MB / 2:  # Simple estimate
-                        self.processed_docs.clear()
+                    # Memory management: keep newest metadata entries only.
+                    if len(self.processed_docs) > MAX_IN_MEMORY_DOCS:
+                        overflow = len(self.processed_docs) - (MAX_IN_MEMORY_DOCS // 2)
+                        for old_key in list(self.processed_docs.keys())[:overflow]:
+                            self.processed_docs.pop(old_key, None)
             
             # Process remaining batch
             for file in batch:
@@ -869,11 +884,17 @@ class DocumentLoader:
         }
     
     def close(self) -> None:
-        """Close database connection"""
-        if self._db_conn:
-            self._db_conn.close()
-            self._db_conn = None
-            logger.info("Database connection closed")
+        """Close all tracked thread-local database connections."""
+        with self._active_conns_lock:
+            for thread_id, conn in list(self._active_conns.items()):
+                try:
+                    if conn and not conn.closed:
+                        conn.close()
+                except Exception:
+                    pass
+                finally:
+                    self._active_conns.pop(thread_id, None)
+        logger.info("Database connections closed")
 
 
 def load_documents(documents_dir: str = None, use_db: bool = True, batch_size: int = BATCH_SIZE) -> List[DocumentMetadata]:
@@ -1330,4 +1351,3 @@ def load_csv_full(file_path: str) -> str:
     except Exception as e:
         logger.error(f"Error loading CSV {file_path}: {e}")
         raise
-

@@ -21,7 +21,7 @@ All enrichment is:
 
 import json
 import re
-import math
+import os
 import time
 import threading
 from typing import List, Dict, Optional, Tuple
@@ -41,6 +41,7 @@ MAX_KEYWORDS_PER_CHUNK = 10
 MAX_QUESTIONS_PER_CHUNK = 3
 MIN_CHUNK_LENGTH = 200             # Skip enrichment for tiny chunks
 MAX_LLM_RETRIES = 2                # Retry transient LLM failures
+ENABLE_CHUNK_ENRICHMENT = os.getenv("ENABLE_CHUNK_ENRICHMENT", "true").strip().lower() in ("1", "true", "yes", "on")
 
 # Concurrency cap: prevents bulk-upload enrichment from overwhelming LLM quota
 MAX_ENRICH_WORKERS = 3
@@ -258,11 +259,17 @@ class MetadataEnricher:
         self.keyword_extractor = KeywordExtractor()
         self.summary_generator = SummaryGenerator()
         self.question_generator = QuestionGenerator()
+        self._stats_lock = threading.Lock()
         # Observability counters
         self._llm_calls = 0
         self._llm_failures = 0
         self._keywords_extracted = 0
         self._chunks_skipped = 0
+
+    def _inc(self, attr: str, amount: int = 1) -> None:
+        """Thread-safe counter increment."""
+        with self._stats_lock:
+            setattr(self, attr, getattr(self, attr) + amount)
 
     def _get_db_connection(self):
         """Get a PostgreSQL connection."""
@@ -280,7 +287,7 @@ class MetadataEnricher:
         with _enrich_semaphore:
             # Length guard: skip tiny chunks that add noise
             if len(text) < MIN_CHUNK_LENGTH:
-                self._chunks_skipped += 1
+                self._inc("_chunks_skipped")
                 return EnrichmentResult(
                     chunk_id=chunk_id,
                     keywords=self.keyword_extractor.extract(text),
@@ -289,23 +296,27 @@ class MetadataEnricher:
                 
             try:
                 keywords = self.keyword_extractor.extract(text)
-                self._keywords_extracted += len(keywords)
+                self._inc("_keywords_extracted", len(keywords))
                 
-                self._llm_calls += 1
+                self._inc("_llm_calls")
                 summary = self.summary_generator.generate(text)
                 
-                self._llm_calls += 1
+                self._inc("_llm_calls")
                 questions = self.question_generator.generate(text)
+
+                success = bool(summary) or bool(questions)
+                if not success:
+                    self._inc("_llm_failures")
 
                 return EnrichmentResult(
                     chunk_id=chunk_id,
                     summary=summary,
                     keywords=keywords,
                     hypothetical_questions=questions,
-                    success=True,
+                    success=success,
                 )
             except Exception as e:
-                self._llm_failures += 1
+                self._inc("_llm_failures")
                 logger.error(f"Enrichment failed for chunk {chunk_id}: {e}")
                 return EnrichmentResult(
                     chunk_id=chunk_id,
@@ -314,7 +325,7 @@ class MetadataEnricher:
                 )
 
     def _enrich_batch_llm(self, rows: List[Tuple[str, str]]) -> List[EnrichmentResult]:
-        """True batched enrichment: sends multiple chunks per LLM call."""
+        """Batched enrichment: summaries are batched, questions are per-chunk."""
         results: List[EnrichmentResult] = []
         
         # Split into sub-batches for LLM batching
@@ -327,9 +338,9 @@ class MetadataEnricher:
             
             # Handle tiny chunks without LLM
             for chunk_id, text in tiny:
-                self._chunks_skipped += 1
+                self._inc("_chunks_skipped")
                 keywords = self.keyword_extractor.extract(text)
-                self._keywords_extracted += len(keywords)
+                self._inc("_keywords_extracted", len(keywords))
                 results.append(EnrichmentResult(
                     chunk_id=chunk_id,
                     keywords=keywords,
@@ -343,33 +354,34 @@ class MetadataEnricher:
             all_keywords = []
             for _, text in enrichable:
                 kw = self.keyword_extractor.extract(text)
-                self._keywords_extracted += len(kw)
+                self._inc("_keywords_extracted", len(kw))
                 all_keywords.append(kw)
             
             # Batch summary generation (single LLM call)
             texts = [txt for _, txt in enrichable]
-            self._llm_calls += 1
+            self._inc("_llm_calls")
             summaries = self.summary_generator.generate_batch(texts)
             
             # Questions still per-chunk (harder to batch reliably)
             questions_list = []
             for _, text in enrichable:
-                self._llm_calls += 1
+                self._inc("_llm_calls")
                 questions_list.append(self.question_generator.generate(text))
             
             for j, (chunk_id, text) in enumerate(enrichable):
                 summary = summaries[j] if j < len(summaries) else None
                 questions = questions_list[j] if j < len(questions_list) else None
                 
-                if summary is None and questions is None:
-                    self._llm_failures += 1
-                    
+                success = bool(summary) or bool(questions)
+                if not success:
+                    self._inc("_llm_failures")
+
                 results.append(EnrichmentResult(
                     chunk_id=chunk_id,
                     summary=summary,
                     keywords=all_keywords[j],
                     hypothetical_questions=questions,
-                    success=True,
+                    success=success,
                 ))
         
         return results
@@ -378,8 +390,8 @@ class MetadataEnricher:
         """Process all pending chunks in the database.
 
         Fetches chunks with enrichment_status='pending', enriches them,
-        and updates the database. Resumable — only processes pending chunks.
-        Uses true LLM batching for summaries.
+        and updates the database. Resumable - only processes pending chunks.
+        Uses batched LLM calls where possible.
 
         Args:
             batch_size: Number of chunks to process per DB fetch batch.
@@ -388,6 +400,11 @@ class MetadataEnricher:
             Total number of chunks enriched.
         """
         total_enriched = 0
+        conn = None
+
+        if not ENABLE_CHUNK_ENRICHMENT:
+            logger.info("Chunk enrichment disabled via ENABLE_CHUNK_ENRICHMENT=false")
+            return 0
 
         try:
             conn = self._get_db_connection()
@@ -395,22 +412,29 @@ class MetadataEnricher:
             while True:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT chunk_id, text FROM chunks
-                        WHERE enrichment_status = 'pending'
-                        ORDER BY created_timestamp ASC
-                        LIMIT %s
+                        WITH picked AS (
+                            SELECT chunk_id, text
+                            FROM chunks
+                            WHERE enrichment_status = 'pending'
+                            ORDER BY created_timestamp ASC
+                            LIMIT %s
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        UPDATE chunks AS c
+                        SET enrichment_status = 'processing'
+                        FROM picked
+                        WHERE c.chunk_id = picked.chunk_id
+                        RETURNING picked.chunk_id, picked.text
                     """, (batch_size,))
                     rows = cursor.fetchall()
+                conn.commit()
 
                 if not rows:
                     break
 
                 logger.info(f"Enriching batch of {len(rows)} chunks")
-
-                # True batched enrichment
                 batch_results = self._enrich_batch_llm(rows)
 
-                # Batch DB update — single commit per batch
                 with conn.cursor() as cursor:
                     for result in batch_results:
                         if result.success:
@@ -430,18 +454,20 @@ class MetadataEnricher:
                             total_enriched += 1
                         else:
                             cursor.execute("""
-                                UPDATE chunks SET enrichment_status = 'failed'
+                                UPDATE chunks
+                                SET enrichment_status = 'failed'
                                 WHERE chunk_id = %s
                             """, (result.chunk_id,))
-
-                conn.commit()  # Single commit per batch, not per chunk
-
+                conn.commit()
                 logger.info(f"Enriched {total_enriched} chunks so far")
 
-            conn.close()
-
         except Exception as e:
+            if conn:
+                conn.rollback()
             logger.error(f"Enrichment worker error: {e}")
+        finally:
+            if conn:
+                conn.close()
 
         logger.info(
             f"Enrichment complete: {total_enriched} enriched, "

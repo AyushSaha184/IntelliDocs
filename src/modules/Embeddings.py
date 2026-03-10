@@ -118,6 +118,7 @@ class NVIDIAEmbedding(EmbeddingModel):
     def __init__(
         self,
         api_key: Optional[str] = None,
+        model_name: str = NVIDIA_MODEL_NAME,
         base_url: str = "https://integrate.api.nvidia.com/v1",
         normalize_embeddings: bool = True,
         timeout: float = 120.0,
@@ -136,11 +137,15 @@ class NVIDIAEmbedding(EmbeddingModel):
             raise ImportError("openai not installed. Run: pip install openai")
 
         resolved_key = api_key or os.environ.get("NVIDIA_API_KEY")
+        if not resolved_key and ("localhost" in base_url or "127.0.0.1" in base_url):
+            # LM Studio and other local OpenAI-compatible endpoints often ignore API keys.
+            resolved_key = "local"
         if not resolved_key:
             raise ValueError(
                 "NVIDIA_API_KEY is required. Pass api_key= or set the env var."
             )
 
+        self._model_name = model_name
         self.normalize_embeddings = normalize_embeddings
         self.timeout = timeout
         self.max_retries = max_retries
@@ -157,7 +162,7 @@ class NVIDIAEmbedding(EmbeddingModel):
         )
 
         logger.info(
-            f"NVIDIAEmbedding initialized: model={NVIDIA_MODEL_NAME}, "
+            f"NVIDIAEmbedding initialized: model={self._model_name}, "
             f"endpoint={base_url}, normalize={normalize_embeddings}"
         )
 
@@ -175,7 +180,7 @@ class NVIDIAEmbedding(EmbeddingModel):
         try:
             response = self._breaker.call(
                 lambda: self.client.embeddings.create(
-                    model=NVIDIA_MODEL_NAME,
+                    model=self._model_name,
                     input=text,
                     encoding_format="float"
                 )
@@ -231,7 +236,7 @@ class NVIDIAEmbedding(EmbeddingModel):
             try:
                 response = self._breaker.call(
                     lambda: self.client.embeddings.create(
-                        model=NVIDIA_MODEL_NAME,
+                        model=self._model_name,
                         input=batch,
                         encoding_format="float"
                     )
@@ -259,7 +264,7 @@ class NVIDIAEmbedding(EmbeddingModel):
 
     @property
     def model_name(self) -> str:
-        return NVIDIA_MODEL_NAME
+        return self._model_name
 
 
 class _EmbeddingDiskCache:
@@ -533,12 +538,26 @@ def create_embedding_service(
     Returns:
         EmbeddingService instance
     """
-    # Strip legacy kwargs that belonged to the old multi-model factory
-    for _key in ("model_type", "model_name", "device", "use_fp16",
-                 "normalize", "max_length", "provider", "task_type",
-                 "output_dimensionality", "base_url"):
+    model_type = str(kwargs.pop("model_type", "nvidia") or "nvidia").lower()
+    model_name = kwargs.pop("model_name", NVIDIA_MODEL_NAME)
+    base_url = kwargs.pop("base_url", "https://integrate.api.nvidia.com/v1")
+
+    # Ignore legacy args not used by NVIDIA/OpenAI-compatible embedders.
+    for _key in ("device", "use_fp16", "normalize", "max_length",
+                 "provider", "task_type", "output_dimensionality"):
         kwargs.pop(_key, None)
-    model = NVIDIAEmbedding(api_key=api_key, **kwargs)
+
+    if model_type in {"nvidia", "nvidia-build", "nvidia-api", "lm-studio", "lmstudio", "openai-compatible"}:
+        model = NVIDIAEmbedding(
+            api_key=api_key,
+            model_name=model_name,
+            base_url=base_url,
+            **kwargs,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported EMBEDDING_PROVIDER '{model_type}'. Supported: nvidia, lm-studio."
+        )
 
     resolved_cache_dir = cache_dir or os.environ.get("EMBEDDING_CACHE_DIR", DEFAULT_CACHE_DIR)
 

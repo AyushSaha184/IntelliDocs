@@ -12,12 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routes import router
-from backend.api.chat_routes import chat_router
+from backend.api.routes import router, chat_router
 from backend.database import init_db
-from backend.database.chat_models import Chat, ChatMessage, Document, CleanupJob  # ensure tables created
+from backend.database.models import Chat, ChatMessage, Document, CleanupJob  # ensure tables created
 from backend.services.cleanup_scheduler import start_cleanup_scheduler, stop_cleanup_scheduler
 from backend.services.cascade_service import start_cleanup_worker, stop_cleanup_worker
+from src.modules.QueryCache import close_all_caches
 from config.config import (
     CORS_ALLOWED_ORIGINS,
     RATE_LIMIT_REQUESTS,
@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
     start_cleanup_scheduler(interval_minutes=10)
     start_cleanup_worker(interval_seconds=60)
     yield
+    close_all_caches()
     stop_cleanup_worker()
     stop_cleanup_scheduler()
 
@@ -122,3 +123,4 @@ if FRONTEND_DIR.exists():
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(FRONTEND_DIR / "index.html")
+

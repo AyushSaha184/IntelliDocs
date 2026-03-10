@@ -498,10 +498,18 @@ def ingest_documents_session(
     use_qdrant = VECTOR_BACKEND == "qdrant"
     if use_qdrant:
         logger.info(f"[{session_id[:8]}] Using qdrant backend")
-        vector_store = QdrantSessionStore(
-            session_id=session_id,
-            embedding_dimension=dimension,
-        )
+        try:
+            vector_store = QdrantSessionStore(
+                session_id=session_id,
+                embedding_dimension=dimension,
+            )
+        except Exception as e:
+            logger.error(f"[{session_id[:8]}] qdrant init failed, falling back to FAISS: {e}")
+            vector_store = FAISSVectorStore(
+                dimension=dimension,
+                index_type="flat",
+                store_path=str(vector_store_dir),
+            )
     else:
         logger.info(f"[{session_id[:8]}] Using FAISS backend")
         vector_store = FAISSVectorStore(

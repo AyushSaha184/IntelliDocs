@@ -26,7 +26,7 @@ from backend.services.chat_service import (
     mark_chat_deleting,
     get_chat_documents,
 )
-from backend.database.chat_models import Chat, Document, ChatMessage
+from backend.database.models import Chat, Document, ChatMessage
 from src.utils.Logger import get_logger
 
 logger = get_logger(__name__)
@@ -118,7 +118,7 @@ def delete_chat_cascade(db, chat_id: str, user_id: Optional[str] = None) -> bool
 
 def cleanup_guest_session(db, session_id: str) -> bool:
     """Hard-delete all guest data for a session."""
-    from backend.database.chat_models import Chat
+    from backend.database.models import Chat
 
     guest_chats = db.query(Chat).filter(
         Chat.session_id == session_id,
@@ -283,3 +283,4 @@ def stop_cleanup_worker():
     global _cleanup_worker
     if _cleanup_worker:
         _cleanup_worker.stop()
+

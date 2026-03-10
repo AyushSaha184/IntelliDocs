@@ -55,6 +55,7 @@ class RetrieverAgent(BaseAgent):
             top_k=task.top_k,
             session_id=task.session_id,
             retriever=task.retriever,
+            retrieval_options=task.retrieval_options,
         )
 
         if not result.success:

@@ -155,12 +155,9 @@ class TablePreserver:
         if not line.strip():
             return False
 
-        pipe_cols = line.count('|')
-        tab_cols = line.count('\t')
-
-        if pipe_cols >= 2:
+        if TABLE_PIPE_ROW.match(line):
             return True
-        if tab_cols >= 2:
+        if TABLE_TAB_ROW.match(line):
             return True
 
         # safer multi-space heuristic
@@ -220,15 +217,8 @@ class HeadingDetector:
         table_spans = sorted([(t.start_char, t.end_char) for t in (tables or [])], key=lambda x: x[0])
         table_starts = [ts[0] for ts in table_spans]
         
-        def is_in_table(char_offset):
-            # Same O(log n) logic as is_inside_any_table
-            if not table_spans:
-                return False
-            idx = bisect.bisect_right(table_starts, char_offset)
-            if idx == 0:
-                return False
-            t_start, t_end = table_spans[idx - 1]
-            return t_start <= char_offset < t_end
+        def is_in_table(char_offset: int) -> bool:
+            return StructureAnalyzer.is_inside_any_table(char_offset, table_spans, table_starts)
 
         # 1. Markdown headings (for structure map only)
         if file_ext.lower() in ('.md', '.markdown'):
@@ -292,12 +282,13 @@ class HeadingDetector:
                 ))
 
         # Deduplicate by char_offset (multiple patterns may match same line)
-        seen_offsets = set()
-        unique_headings = []
-        for h in sorted(headings, key=lambda h: h.char_offset):
-            if h.char_offset not in seen_offsets:
-                seen_offsets.add(h.char_offset)
-                unique_headings.append(h)
+        # Keep the highest-confidence candidate at each offset.
+        best_by_offset = {}
+        for h in headings:
+            prev = best_by_offset.get(h.char_offset)
+            if prev is None or h.confidence > prev.confidence:
+                best_by_offset[h.char_offset] = h
+        unique_headings = sorted(best_by_offset.values(), key=lambda h: h.char_offset)
 
         if unique_headings:
             logger.debug(f"HeadingDetector: found {len(unique_headings)} headings")
@@ -399,11 +390,12 @@ class BoundaryDetector:
         DEDUP_WINDOW = 50
         seen = set()
         deduped: List[SectionBoundary] = []
-        
+
         for b in boundaries:
             bucket = b.char_offset // DEDUP_WINDOW
-            if bucket not in seen:
-                seen.add(bucket)
+            dedupe_key = (bucket, b.boundary_type, b.label)
+            if dedupe_key not in seen:
+                seen.add(dedupe_key)
                 deduped.append(b)
 
         return deduped
@@ -453,35 +445,56 @@ class StructureAnalyzer:
     def _adjust_sections_for_tables(self, sections: List[Tuple[int, int, Optional[str]]], table_spans: List[Tuple[int, int]], text_length: int) -> List[Tuple[int, int, Optional[str]]]:
         if not sections or not table_spans:
             return sections
-            
-        adjusted_sections = []
+
+        table_spans = sorted(table_spans, key=lambda x: x[0])
+        table_starts = [ts[0] for ts in table_spans]
+
+        adjusted_sections: List[Tuple[int, int, Optional[str]]] = []
         for start, end, label in sections:
             new_start, new_end = start, end
-            
-            for t_start, t_end in table_spans:
-                # If section boundary falls purely inside the table (inclusive)
+
+            # Check table potentially containing section start
+            idx_start = bisect.bisect_right(table_starts, new_start)
+            if idx_start > 0:
+                t_start, t_end = table_spans[idx_start - 1]
                 if t_start < new_start < t_end:
                     new_start = t_start
+
+            # Check table potentially containing section end
+            idx_end = bisect.bisect_right(table_starts, new_end)
+            if idx_end > 0:
+                t_start, t_end = table_spans[idx_end - 1]
                 if t_start < new_end < t_end:
                     new_end = t_end
-                    
+
+            # Clamp to document bounds
+            new_start = max(0, min(new_start, text_length))
+            new_end = max(0, min(new_end, text_length))
+
             if new_start < new_end:
                 adjusted_sections.append((new_start, new_end, label))
-                
-        # Filter duplicates/consolidate after sliding edges
-        final_sections = []
-        for start, end, label in adjusted_sections:
+
+        # Normalize overlaps after boundary shifts.
+        final_sections: List[Tuple[int, int, Optional[str]]] = []
+        for start, end, label in sorted(adjusted_sections, key=lambda s: s[0]):
             if not final_sections:
                 final_sections.append((start, end, label))
-            else:
-                prev_start, prev_end, prev_label = final_sections[-1]
-                # If they perfectly abut and have same label, merge them
-                # Since we extended boundaries, they might overlap. If overlap, merge them safely.
-                if start <= prev_end and label == prev_label and start >= prev_start:
-                    final_sections[-1] = (prev_start, max(end, prev_end), prev_label)
-                elif start < end:
-                    final_sections.append((start, end, label))
-                    
+                continue
+
+            prev_start, prev_end, prev_label = final_sections[-1]
+
+            # Merge contiguous/overlapping ranges for same label.
+            if start <= prev_end and label == prev_label:
+                final_sections[-1] = (prev_start, max(prev_end, end), prev_label)
+                continue
+
+            # Prevent overlap for different labels.
+            if start < prev_end:
+                start = prev_end
+
+            if start < end:
+                final_sections.append((start, end, label))
+
         return final_sections
 
     @staticmethod
@@ -511,8 +524,8 @@ class StructureAnalyzer:
         if not text or not text.strip():
             return DocumentStructure(has_structure=False)
             
-        if len(text) < 500:
-            # small docs rarely benefit from heavy structure analysis
+        if len(text) < 500 and text.count('\n') < 8 and len(text.split()) < 120:
+            # Very short docs rarely benefit from heavy structure analysis.
             return DocumentStructure(has_structure=False)
 
         line_offsets = _compute_line_offsets(text)

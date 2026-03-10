@@ -21,6 +21,7 @@ import os
 import time
 import queue
 import hashlib
+import random
 import threading
 import multiprocessing as mp
 from concurrent.futures import (
@@ -154,7 +155,12 @@ def load_document(file_path: Path) -> Optional[Tuple[str, str, str, str]]:
     try:
         file_name = file_path.name
         file_ext = file_path.suffix.lower()
-        doc_id = f"doc_{hashlib.md5(file_name.encode()).hexdigest()[:8]}"
+        try:
+            st = file_path.stat()
+            identity = f"{file_path.resolve()}|{st.st_size}|{st.st_mtime_ns}"
+        except OSError:
+            identity = str(file_path.resolve())
+        doc_id = f"doc_{hashlib.md5(identity.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
         content = ""
 
         # -- PDF -------------------------------------------------------
@@ -515,7 +521,8 @@ class ParallelRAGPipeline:
     ):
         self.documents_dir = Path(documents_dir)
         self.vector_store_dir = Path(vector_store_dir)
-        self.session_id = session_id
+        # Avoid accidental cross-run reuse of the same default session namespace.
+        self.session_id = session_id if session_id != "cli_build" else f"cli_build_{int(time.time())}"
 
         # Chunker settings (passed to child processes)
         self.chunker_config = {
@@ -532,7 +539,12 @@ class ParallelRAGPipeline:
             1, os.cpu_count() or 4
         )
         # Concurrent embedding API calls (I/O-bound: more = faster for remote API)
-        self.num_embed_workers = num_embed_workers or 6
+        env_embed_workers = os.getenv("PARALLEL_EMBED_WORKERS", "6")
+        try:
+            default_embed_workers = max(1, int(env_embed_workers))
+        except ValueError:
+            default_embed_workers = 6
+        self.num_embed_workers = num_embed_workers or default_embed_workers
 
         # GPU
         self.gpu_config = gpu_config or GPUConfig.detect()
@@ -750,22 +762,27 @@ class ParallelRAGPipeline:
             """Embed one batch; returns (chunk_batch, results). OOM-safe."""
             texts      = [c["text"] for c in chunk_batch]
             batch_size = self.gpu_config.batch_size
-            for retry in range(4):
+            for retry in range(5):
                 try:
                     results = self.embedding_service.embed_batch(
                         texts, batch_size=batch_size,
                     )
                     return chunk_batch, results
                 except Exception as exc:
-                    if "out of memory" in str(exc).lower() and retry < 3:
+                    err = str(exc).lower()
+                    if "out of memory" in err and retry < 4:
                         old        = batch_size
                         batch_size = max(4, old // 2)
                         logger.warning(
-                            f"OOM retry {retry+1}/3: {old} -> {batch_size}"
+                            f"OOM retry {retry+1}/4: {old} -> {batch_size}"
                         )
                         if TORCH_AVAILABLE:
                             torch.cuda.empty_cache()
                             time.sleep(0.5)
+                    elif any(x in err for x in ("429", "503", "rate limit", "too many requests", "temporarily unavailable", "timeout", "timed out")) and retry < 4:
+                        backoff = min(8.0, (2 ** retry) + random.uniform(0, 0.5))
+                        logger.warning(f"Transient embedding API error, retry {retry+1}/4 after {backoff:.2f}s: {exc}")
+                        time.sleep(backoff)
                     else:
                         raise
             return chunk_batch, []  # unreachable; satisfies type-checker
@@ -879,13 +896,16 @@ class ParallelRAGPipeline:
 
         Returns True on success, False on failure.
         """
-        # Clear stale __pycache__ so spawned processes see latest source
-        import shutil
         import importlib
 
-        modules_dir = Path(__file__).parent
-        for cache_dir in modules_dir.rglob("__pycache__"):
-            shutil.rmtree(cache_dir, ignore_errors=True)
+        # Optional debug-only cache cleanup; disabled by default for speed.
+        clear_pycache = os.getenv("PARALLEL_CLEAR_PYCACHE", "false").strip().lower() in ("1", "true", "yes", "on")
+        if clear_pycache:
+            import shutil
+            modules_dir = Path(__file__).parent
+            for cache_dir in modules_dir.rglob("__pycache__"):
+                shutil.rmtree(cache_dir, ignore_errors=True)
+            logger.info("Cleared __pycache__ directories (PARALLEL_CLEAR_PYCACHE=true)")
         importlib.invalidate_caches()
 
         pipeline_start = time.time()

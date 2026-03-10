@@ -10,7 +10,7 @@ Provides:
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from src.agents.Tools import ToolRegistry, ToolResult
 from src.utils.Logger import get_logger
 
@@ -29,6 +29,7 @@ class AgentTask:
     top_k: int = 5
     session_id: str = ""
     retriever: Any = None  # RAGRetriever instance, injected by orchestrator
+    retrieval_options: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -407,7 +407,15 @@ class RAGRetriever:
         if self.bm25_retriever:
             logger.info("Hybrid Retrieval Enabled (Dense + BM25)")
 
-    def retrieve(self, query: str, k: int = 5, force_rerank: Optional[bool] = None, filters: Optional[Dict[str, Any]] = None) -> List[RetrievalResult]:
+    def retrieve(
+        self,
+        query: str,
+        k: int = 5,
+        force_rerank: Optional[bool] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        candidate_pool_multiplier: int = 3,
+        rerank_top_k: Optional[int] = None,
+    ) -> List[RetrievalResult]:
         """Retrieve relevant chunks for a query using Hybrid Retrieval.
         
         Args:
@@ -420,7 +428,8 @@ class RAGRetriever:
             List of RetrievalResult objects
         """
         # Get more candidates if reranking or using hybrid
-        retrieval_k = k * 3 if self.reranker else k
+        multiplier = max(1, int(candidate_pool_multiplier or 1))
+        retrieval_k = k * multiplier if self.reranker else k
         
         # 1. Dense Retrieval
         query_embedding = self.embedding_service.embed_text(query)
@@ -536,7 +545,8 @@ class RAGRetriever:
         
         if should_rerank and self.reranker:
             doc_texts = [r.text for r in results]
-            reranked = self.reranker.rerank(query, doc_texts, top_k=k)
+            rerank_limit = rerank_top_k or k
+            reranked = self.reranker.rerank(query, doc_texts, top_k=rerank_limit)
             
             # Reorder results based on reranker scores
             reranked_results = []

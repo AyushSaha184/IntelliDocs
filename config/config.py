@@ -104,21 +104,24 @@ POSTGRES_USER = _env("POSTGRES_USER", _db_from_url.get("user", "postgres"))
 POSTGRES_PASSWORD = _env("POSTGRES_PASSWORD", _db_from_url.get("password", ""))
 POSTGRES_SSLMODE = _env("POSTGRES_SSLMODE", "require" if "supabase.co" in POSTGRES_HOST else "prefer")
 
-# Vector backend selection
-# Vector backend selection
-_raw_vector_backend = _env("VECTOR_BACKEND", "auto").lower()  # "auto" | "faiss" | "qdrant"
-if _raw_vector_backend == "auto":
-    # Prefer qdrant automatically for managed/remote DBs, keep FAISS for local DBs.
-    _looks_remote = POSTGRES_HOST not in {"localhost", "127.0.0.1", ""}
-    VECTOR_BACKEND = "qdrant" if _looks_remote else "faiss"
-else:
-    VECTOR_BACKEND = _raw_vector_backend
-
 QDRANT_URL = _env("QDRANT_URL", "")
 QDRANT_API_KEY = _env("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = _env("QDRANT_COLLECTION", "chunk_embeddings")
 QDRANT_DISTANCE = _env("QDRANT_DISTANCE", "cosine").lower()  # "cosine" | "dot" | "euclid"
 QDRANT_TIMEOUT_SECONDS = float(_env("QDRANT_TIMEOUT_SECONDS", "10"))
+
+# Vector backend selection
+# Vector backend selection
+_raw_vector_backend = _env("VECTOR_BACKEND", "auto").lower()  # "auto" | "faiss" | "qdrant"
+if _raw_vector_backend == "auto":
+    # Prefer qdrant for managed/remote DBs only when qdrant is configured.
+    _looks_remote = POSTGRES_HOST not in {"localhost", "127.0.0.1", ""}
+    VECTOR_BACKEND = "qdrant" if (_looks_remote and QDRANT_URL) else "faiss"
+else:
+    VECTOR_BACKEND = _raw_vector_backend if _raw_vector_backend in {"faiss", "qdrant"} else "faiss"
+
+if VECTOR_BACKEND == "qdrant" and not QDRANT_URL:
+    VECTOR_BACKEND = "faiss"
 
 # Supabase auth/storage configuration
 SUPABASE_URL = _env("SUPABASE_URL", "")
