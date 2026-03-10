@@ -45,16 +45,11 @@ render.yaml
 # Data and logs
 data/
 logs/
-Demo/
 
 # Runtime-generated index and cache files (never commit)
 data/vector_store/bm25_index.pkl
 data/cache/
 data/.parse_cache/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb_checkpoints
 
 # Testing
 .pytest_cache/
