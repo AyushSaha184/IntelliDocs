@@ -406,7 +406,7 @@ Deploy via `render.yaml` (blueprint auto-configures DB, env vars, and disk):
 
 Every `POST /ask` request passes through `AgentOrchestrator.run()`, which coordinates a chain of specialized agents:
 
-![Multi-Agent Orchestration](https://postimg.cc/v4N9TGNN)
+![Multi-Agent Orchestration]([https://postimg.cc/v4N9TGNN](https://i.postimg.cc/g0YKMJqm/Multi-Agent.png))
 
 **Guardrails:**
 
