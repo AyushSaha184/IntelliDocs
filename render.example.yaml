@@ -74,7 +74,7 @@ services:
       - key: LLM_TEMPERATURE
         value: "0.7"
       - key: LLM_MAX_TOKENS
-        value: "4000"
+        value: "1000"
       - key: OPENROUTER_API_KEY
         sync: false  # Set this manually in Render dashboard
       - key: NVIDIA_API_KEY
@@ -95,8 +95,10 @@ services:
         value: "true"
       - key: RERANKER_MODEL
         value: nv-rerank-qa-mistral-4b:1
+
       - key: PYTHONUNBUFFERED
         value: "1"
+
       - key: PYTHONPATH
         value: /app
     disk:
