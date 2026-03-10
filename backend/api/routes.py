@@ -435,10 +435,9 @@ def health(db: DBSession = Depends(get_db)):
 
     # 2. Vector Store File Check
     try:
-        if VECTOR_BACKEND == "pgvector":
-            from sqlalchemy import text
-            result = db.execute(text("SELECT COUNT(*) FROM chunk_embeddings"))
-            status_report["system_stats"]["total_pgvector_rows"] = int(result.scalar() or 0)
+        if VECTOR_BACKEND == "qdrant":
+            from src.modules.QdrantStore import qdrant_collection_count
+            status_report["system_stats"]["total_qdrant_points"] = int(qdrant_collection_count() or 0)
         else:
             from backend.services.session_service import DATA_DIR
             vstore_dir = Path(DATA_DIR) / "vector_store"
@@ -448,7 +447,7 @@ def health(db: DBSession = Depends(get_db)):
             else:
                 status_report["system_stats"]["total_faiss_indexes"] = 0
     except Exception as e:
-        logger.error(f"Healthcheck failed FAISS verification: {e}")
+        logger.error(f"Healthcheck failed vector backend verification: {e}")
         status_report["status"] = "degraded"
 
     return status_report

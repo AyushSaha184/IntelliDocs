@@ -43,7 +43,7 @@ DocumentLoader = DocumentMetadata = load_documents = None
 TextChunker = TextChunk = ChunkingStrategy = create_chunker = None
 create_embedding_service = None
 FAISSVectorStore = None
-PGVectorSessionStore = None
+QdrantSessionStore = None
 BM25Retriever = None
 RAGRetriever = NvidiaReranker = None
 QueryHandler = None
@@ -57,7 +57,7 @@ def _load_heavy_imports():
     global TextChunker, TextChunk, ChunkingStrategy, create_chunker
     global create_embedding_service
     global FAISSVectorStore
-    global PGVectorSessionStore
+    global QdrantSessionStore
     global RAGRetriever, NvidiaReranker
     global QueryHandler
     global create_llm, BaseLLM
@@ -74,8 +74,8 @@ def _load_heavy_imports():
 
     from src.modules.VectorStore import FAISSVectorStore as _FVS
     FAISSVectorStore = _FVS
-    from src.modules.PgVectorStore import PGVectorSessionStore as _PGVS
-    PGVectorSessionStore = _PGVS
+    from src.modules.QdrantStore import QdrantSessionStore as _QVS
+    QdrantSessionStore = _QVS
 
     from src.modules.Retriever import BM25Retriever as _BM25
     BM25Retriever = _BM25
@@ -159,7 +159,7 @@ def clear_postgres_tables():
         """, (POSTGRES_DB,))
         
         # Clear tables in order (respecting foreign keys where applicable)
-        tables = ['chunk_embeddings', 'chunks', 'hash_index', 'processing_log', 'documents', 'sessions']
+        tables = ['chunks', 'hash_index', 'processing_log', 'documents', 'sessions']
         total_deleted = 0
         for table in tables:
             try:
@@ -323,14 +323,14 @@ class RAGPipeline:
         )
         
         # Initialize vector store with batch support
-        if VECTOR_BACKEND == "pgvector":
+        if VECTOR_BACKEND == "qdrant":
             try:
-                self.vector_store = PGVectorSessionStore(
+                self.vector_store = QdrantSessionStore(
                     session_id=self.session_id,
                     embedding_dimension=self.embedding_service.model.dimension,
                 )
             except Exception as e:
-                logger.warning(f"pgvector init failed in RAGPipeline, falling back to FAISS: {e}")
+                logger.warning(f"qdrant init failed in RAGPipeline, falling back to FAISS: {e}")
                 self.vector_store = FAISSVectorStore(
                     dimension=self.embedding_service.model.dimension,
                     index_type=vector_store_type,
@@ -511,15 +511,15 @@ def load_chunks_metadata(chunks_dir: str) -> dict:
 
 def create_cli_vector_store(embedding_service, vector_store_dir: str, session_id: str, index_type: str = "flat"):
     """Create CLI vector store from configured backend with safe fallback."""
-    if VECTOR_BACKEND == "pgvector":
+    if VECTOR_BACKEND == "qdrant":
         try:
-            logger.info(f"Using pgvector backend for CLI session '{session_id}'")
-            return PGVectorSessionStore(
+            logger.info(f"Using qdrant backend for CLI session '{session_id}'")
+            return QdrantSessionStore(
                 session_id=session_id,
                 embedding_dimension=embedding_service.model.dimension,
             )
         except Exception as e:
-            logger.warning(f"pgvector init failed, falling back to FAISS for CLI: {e}")
+            logger.warning(f"qdrant init failed, falling back to FAISS for CLI: {e}")
 
     vector_store = FAISSVectorStore(
         dimension=embedding_service.model.dimension,
@@ -545,7 +545,7 @@ def run_interactive_query(args):
         )
         logger.info("Embedding service initialized")
         
-        # Load vector store (pgvector or FAISS)
+        # Load vector store (qdrant or FAISS)
         vector_store = create_cli_vector_store(
             embedding_service=embedding_service,
             vector_store_dir=args.vector_store_dir,
@@ -1207,7 +1207,7 @@ Note: By default, --build clears existing databases for a fresh rebuild.
         "--session-id",
         type=str,
         default="cli_build",
-        help="Session id for pgvector-backed CLI build/query/test flows (default: cli_build)",
+        help="Session id for qdrant-backed CLI build/query/test flows (default: cli_build)",
     )
     parser.add_argument("--loader-threads", type=int, default=8, help="Number of loader threads for parallel mode (default: 8)")
     parser.add_argument("--chunker-processes", type=int, default=None, help="Number of chunker processes for parallel mode (default: cpu_count)")

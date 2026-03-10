@@ -3,7 +3,7 @@
 from typing import Optional, Dict, Any
 from pathlib import Path
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.PgVectorStore import PGVectorSessionStore
+from src.modules.QdrantStore import QdrantSessionStore
 from src.modules.Retriever import RAGRetriever
 from src.modules.Retriever import BM25Retriever
 from src.modules.QueryGeneration import QueryHandler, QueryResult
@@ -56,14 +56,14 @@ def _get_session_retriever(
     if not bm25_loaded:
         logger.warning(f"[session] BM25 index not loaded for {session_id[:8]} (dense-only fallback)")
 
-    if VECTOR_BACKEND == "pgvector":
+    if VECTOR_BACKEND == "qdrant":
         try:
-            vector_store = PGVectorSessionStore(
+            vector_store = QdrantSessionStore(
                 session_id=session_id,
                 embedding_dimension=embedding_service.model.dimension,
             )
         except Exception as e:
-            logger.error(f"[session] pgvector init failed, falling back to FAISS: {e}")
+            logger.error(f"[session] qdrant init failed, falling back to FAISS: {e}")
             vector_store = FAISSVectorStore(
                 dimension=embedding_service.model.dimension,
                 index_type="flat",

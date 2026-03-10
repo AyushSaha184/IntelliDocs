@@ -196,17 +196,13 @@ class SessionManager:
     def delete_session(self, session_id: str, db: DBSession):
         """Delete session and all associated data."""
         with self._lock:
-            # Delete pgvector embeddings for this session (if table exists)
+            # Delete qdrant vectors for this session (best-effort).
             try:
-                db.execute(
-                    text("DELETE FROM chunk_embeddings WHERE session_id = :session_id"),
-                    {"session_id": session_id},
-                )
-                db.commit()
+                from src.modules.QdrantStore import delete_session_vectors
+                delete_session_vectors(session_id)
             except Exception as e:
-                # Some environments may not have pgvector table yet.
-                db.rollback()
-                logger.warning(f"Could not delete pgvector rows for {session_id}: {e}")
+                logger.warning(f"Could not delete qdrant vectors for {session_id}: {e}")
+
 
             # Delete from database
             session = db.query(Session).filter(Session.session_id == session_id).first()

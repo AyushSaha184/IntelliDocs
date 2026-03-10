@@ -23,6 +23,8 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 from src.utils.Logger import get_logger
+from src.utils.CircuitBreaker import CircuitBreaker, CircuitBreakerOpenError
+from config.config import CIRCUIT_BREAKER_FAILURE_THRESHOLD, CIRCUIT_BREAKER_RECOVERY_SECONDS
 
 logger = get_logger(__name__)
 
@@ -142,6 +144,11 @@ class NVIDIAEmbedding(EmbeddingModel):
         self.normalize_embeddings = normalize_embeddings
         self.timeout = timeout
         self.max_retries = max_retries
+        self._breaker = CircuitBreaker(
+            name="nvidia_embedding",
+            failure_threshold=CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            recovery_seconds=CIRCUIT_BREAKER_RECOVERY_SECONDS,
+        )
 
         self.client = openai.OpenAI(
             api_key=resolved_key,
@@ -165,11 +172,17 @@ class NVIDIAEmbedding(EmbeddingModel):
         """Embed a single text"""
         if not text or not text.strip():
             return None
-        response = self.client.embeddings.create(
-            model=NVIDIA_MODEL_NAME,
-            input=text,
-            encoding_format="float"
-        )
+        try:
+            response = self._breaker.call(
+                lambda: self.client.embeddings.create(
+                    model=NVIDIA_MODEL_NAME,
+                    input=text,
+                    encoding_format="float"
+                )
+            )
+        except CircuitBreakerOpenError as e:
+            logger.error(f"Embedding circuit breaker OPEN: {e}")
+            raise
         if response.data:
             arr = np.array(response.data[0].embedding, dtype=np.float32)
             return self._normalize(arr)
@@ -215,11 +228,17 @@ class NVIDIAEmbedding(EmbeddingModel):
         all_embeddings: List[np.ndarray] = []
         for i in range(0, len(truncated), batch_size):
             batch = truncated[i:i + batch_size]
-            response = self.client.embeddings.create(
-                model=NVIDIA_MODEL_NAME,
-                input=batch,
-                encoding_format="float"
-            )
+            try:
+                response = self._breaker.call(
+                    lambda: self.client.embeddings.create(
+                        model=NVIDIA_MODEL_NAME,
+                        input=batch,
+                        encoding_format="float"
+                    )
+                )
+            except CircuitBreakerOpenError as e:
+                logger.error(f"Embedding circuit breaker OPEN during batch: {e}")
+                raise
             for item in response.data:
                 arr = np.array(item.embedding, dtype=np.float32)
                 if self.normalize_embeddings:

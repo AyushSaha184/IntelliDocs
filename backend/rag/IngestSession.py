@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.modules.Chunking import TextChunker
 from src.modules.Embeddings import create_embedding_service
 from src.modules.VectorStore import FAISSVectorStore
-from src.modules.PgVectorStore import PGVectorSessionStore
+from src.modules.QdrantStore import QdrantSessionStore
 from src.utils.Logger import get_logger
 from config.config import (
     EMBEDDING_PROVIDER,
@@ -495,10 +495,10 @@ def ingest_documents_session(
     )
 
     dimension = embedding_service.model.dimension
-    use_pgvector = VECTOR_BACKEND == "pgvector"
-    if use_pgvector:
-        logger.info(f"[{session_id[:8]}] Using pgvector backend")
-        vector_store = PGVectorSessionStore(
+    use_qdrant = VECTOR_BACKEND == "qdrant"
+    if use_qdrant:
+        logger.info(f"[{session_id[:8]}] Using qdrant backend")
+        vector_store = QdrantSessionStore(
             session_id=session_id,
             embedding_dimension=dimension,
         )
@@ -613,12 +613,12 @@ def ingest_documents_session(
     logger.info(f"Added {total_embedded} vectors to store")
     logger.info(f"Step 3: Generated {total_embedded} embeddings in {step_times['embed']:.2f}s")
 
-    # 6. Save vector store (FAISS requires explicit save; pgvector is persisted on write)
+    # 6. Save vector store (FAISS requires explicit save; qdrant is persisted on write)
     if hasattr(vector_store, "save"):
         vector_store.save(str(vector_store_dir))
         logger.info(f"Vector store saved with {total_embedded} vectors")
     else:
-        logger.info(f"pgvector rows upserted: {total_embedded}")
+        logger.info(f"qdrant points upserted: {total_embedded}")
 
     bm25_retriever.build()
     bm25_retriever.save()

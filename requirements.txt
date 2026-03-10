@@ -48,3 +48,7 @@ torch
 tiktoken 
 psutil   
 pyyaml
+
+
+# Vector DB
+qdrant-client

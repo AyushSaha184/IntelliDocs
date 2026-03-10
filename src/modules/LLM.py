@@ -7,6 +7,8 @@ import os
 import requests
 import json
 from src.utils.Logger import get_logger
+from src.utils.CircuitBreaker import CircuitBreaker, CircuitBreakerOpenError
+from config.config import CIRCUIT_BREAKER_FAILURE_THRESHOLD, CIRCUIT_BREAKER_RECOVERY_SECONDS
 
 try:
     from huggingface_hub import InferenceClient
@@ -111,6 +113,12 @@ class OpenRouterLLM(BaseLLM):
         self.site_url = site_url or os.getenv('OPENROUTER_SITE_URL', '')
         self.site_name = site_name or os.getenv('OPENROUTER_SITE_NAME', '')
         
+        self._breaker = CircuitBreaker(
+            name="openrouter_llm",
+            failure_threshold=CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            recovery_seconds=CIRCUIT_BREAKER_RECOVERY_SECONDS,
+        )
+
         logger.info(f"OpenRouter client initialized with model: {model_name}")
         logger.info(f"Using API key (length: {len(self.api_key)})")
 
@@ -152,11 +160,13 @@ class OpenRouterLLM(BaseLLM):
             }
 
             # Make API request
-            response = requests.post(
-                url=self.base_url,
-                headers=headers,
-                data=json.dumps(payload),
-                timeout=60
+            response = self._breaker.call(
+                lambda: requests.post(
+                    url=self.base_url,
+                    headers=headers,
+                    data=json.dumps(payload),
+                    timeout=60
+                )
             )
             response.raise_for_status()
             
@@ -320,6 +330,11 @@ class CerebrasLLM(BaseLLM):
             raise ImportError("cerebras_cloud_sdk is not installed. Run `pip install cerebras_cloud_sdk`")
             
         self.client = Cerebras(api_key=self.api_key)
+        self._breaker = CircuitBreaker(
+            name="cerebras_llm",
+            failure_threshold=CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            recovery_seconds=CIRCUIT_BREAKER_RECOVERY_SECONDS,
+        )
         logger.info(f"Cerebras client initialized with model: {model_name}")
 
     def generate(
@@ -334,13 +349,15 @@ class CerebrasLLM(BaseLLM):
             temp = temperature if temperature is not None else self.temperature
             tokens = max_tokens if max_tokens is not None else self.max_tokens
 
-            response = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model_name,
-                temperature=temp,
-                max_completion_tokens=tokens,
+            response = self._breaker.call(
+                lambda: self.client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=self.model_name,
+                    temperature=temp,
+                    max_completion_tokens=tokens,
+                )
             )
-            
+
             content = response.choices[0].message.content
             
             # Extract token usage if available

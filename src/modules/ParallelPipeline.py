@@ -556,9 +556,9 @@ class ParallelRAGPipeline:
             **filtered,
         )
 
-        # Vector backend initialization (pgvector or FAISS)
+        # Vector backend initialization (qdrant or FAISS)
         from src.modules.VectorStore import FAISSVectorStore
-        from src.modules.PgVectorStore import PGVectorSessionStore
+        from src.modules.QdrantStore import QdrantSessionStore
 
         doc_count = sum(
             1 for p in self.documents_dir.iterdir()
@@ -578,9 +578,9 @@ class ParallelRAGPipeline:
                 f"-> using Flat index (exact search)"
             )
 
-        if VECTOR_BACKEND == "pgvector":
-            logger.info(f"Using pgvector backend for parallel pipeline session '{self.session_id}'")
-            self.vector_store = PGVectorSessionStore(
+        if VECTOR_BACKEND == "qdrant":
+            logger.info(f"Using qdrant backend for parallel pipeline session '{self.session_id}'")
+            self.vector_store = QdrantSessionStore(
                 session_id=self.session_id,
                 embedding_dimension=self.embedding_service.model.dimension,
             )

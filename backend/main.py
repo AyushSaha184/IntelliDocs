@@ -1,42 +1,103 @@
 """FastAPI entrypoint for RAG backend."""
 
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
+import threading
+import time
+
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from backend.api.routes import router
+from backend.database import init_db
+from backend.services.cleanup_scheduler import start_cleanup_scheduler, stop_cleanup_scheduler
+from config.config import (
+    CORS_ALLOWED_ORIGINS,
+    RATE_LIMIT_REQUESTS,
+    RATE_LIMIT_WINDOW_SECONDS,
+)
 
 # Load environment variables from .env file
 load_dotenv()
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from backend.api.routes import router
-from backend.database import init_db
-from backend.services.cleanup_scheduler import start_cleanup_scheduler, stop_cleanup_scheduler
-from config.config import CORS_ALLOWED_ORIGINS
+
+class InMemoryRateLimiter:
+    """Simple fixed-window rate limiter keyed by client IP."""
+
+    def __init__(self, max_requests: int, window_seconds: int):
+        self.max_requests = max(1, int(max_requests))
+        self.window_seconds = max(1, int(window_seconds))
+        self._events = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = time.time()
+        cutoff = now - self.window_seconds
+        with self._lock:
+            q = self._events[key]
+            while q and q[0] < cutoff:
+                q.popleft()
+            if len(q) >= self.max_requests:
+                return False
+            q.append(now)
+            return True
+
+
+_limiter = InMemoryRateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
+
+
+def _client_ip(request: Request) -> str:
+    # Respect proxy header first, then socket address.
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Startup
-    init_db()  # Initialize database tables
-    start_cleanup_scheduler(interval_minutes=10)  # Check every 10 min, delete sessions 15min+ old OR 30min+ idle
+    init_db()
+    start_cleanup_scheduler(interval_minutes=10)
     yield
-    # Shutdown
     stop_cleanup_scheduler()
 
 
 app = FastAPI(title="RAG Backend", lifespan=lifespan)
 
-# CORS – allow local dev
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS if CORS_ALLOWED_ORIGINS else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    # Skip preflight and health endpoint from throttling.
+    if request.method == "OPTIONS" or request.url.path == "/api/health":
+        return await call_next(request)
+
+    ip = _client_ip(request)
+    if not _limiter.allow(ip):
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "Rate limit exceeded",
+                "limit": RATE_LIMIT_REQUESTS,
+                "window_seconds": RATE_LIMIT_WINDOW_SECONDS,
+            },
+        )
+    return await call_next(request)
+
 
 # API routes under /api prefix
 app.include_router(router, prefix="/api")

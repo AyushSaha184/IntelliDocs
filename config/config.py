@@ -105,15 +105,20 @@ POSTGRES_PASSWORD = _env("POSTGRES_PASSWORD", _db_from_url.get("password", ""))
 POSTGRES_SSLMODE = _env("POSTGRES_SSLMODE", "require" if "supabase.co" in POSTGRES_HOST else "prefer")
 
 # Vector backend selection
-_raw_vector_backend = _env("VECTOR_BACKEND", "auto").lower()  # "auto" | "faiss" | "pgvector"
+# Vector backend selection
+_raw_vector_backend = _env("VECTOR_BACKEND", "auto").lower()  # "auto" | "faiss" | "qdrant"
 if _raw_vector_backend == "auto":
-    # Prefer pgvector automatically for managed/remote DBs (Supabase), keep FAISS for local DBs.
+    # Prefer qdrant automatically for managed/remote DBs, keep FAISS for local DBs.
     _looks_remote = POSTGRES_HOST not in {"localhost", "127.0.0.1", ""}
-    VECTOR_BACKEND = "pgvector" if _looks_remote else "faiss"
+    VECTOR_BACKEND = "qdrant" if _looks_remote else "faiss"
 else:
     VECTOR_BACKEND = _raw_vector_backend
-PGVECTOR_DISTANCE = _env("PGVECTOR_DISTANCE", "cosine").lower()  # "cosine" | "l2" | "inner"
-PGVECTOR_PROBES = int(_env("PGVECTOR_PROBES", "10"))
+
+QDRANT_URL = _env("QDRANT_URL", "")
+QDRANT_API_KEY = _env("QDRANT_API_KEY", "")
+QDRANT_COLLECTION = _env("QDRANT_COLLECTION", "chunk_embeddings")
+QDRANT_DISTANCE = _env("QDRANT_DISTANCE", "cosine").lower()  # "cosine" | "dot" | "euclid"
+QDRANT_TIMEOUT_SECONDS = float(_env("QDRANT_TIMEOUT_SECONDS", "10"))
 
 # Supabase auth/storage configuration
 SUPABASE_URL = _env("SUPABASE_URL", "")
@@ -135,6 +140,16 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
+
+
+# Request protection
+RATE_LIMIT_REQUESTS = int(_env("RATE_LIMIT_REQUESTS", "5"))
+RATE_LIMIT_WINDOW_SECONDS = int(_env("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
+
+# Circuit breaker
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(_env("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "10"))
+CIRCUIT_BREAKER_RECOVERY_SECONDS = int(_env("CIRCUIT_BREAKER_RECOVERY_SECONDS", "120"))
 
 def postgres_connect_kwargs(connect_timeout: int = 10) -> dict:
     """Shared psycopg2 kwargs (Supabase-friendly SSL defaults included)."""

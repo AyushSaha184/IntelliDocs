@@ -43,3 +43,7 @@ tqdm
 tiktoken
 psutil
 pyyaml
+
+
+# Vector DB
+qdrant-client

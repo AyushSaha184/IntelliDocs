@@ -12,27 +12,26 @@ import json
 import hashlib
 import threading
 from typing import Optional, Dict, Any, List
-from datetime import datetime
 from src.utils.Logger import get_logger
 
 logger = get_logger(__name__)
 
 # Default cache directory
 DEFAULT_CACHE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
-    "data", 
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data",
     "cache"
 )
 
 
 class BaseSQLiteCache:
     """Base class for SQLite-backed thread-safe caches."""
-    
+
     def __init__(self, db_path: str, table_schema: str, table_name: str):
         self.db_path = db_path
         self.table_name = table_name
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
+
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -69,7 +68,7 @@ class BaseSQLiteCache:
 
 class RetrievalCache(BaseSQLiteCache):
     """Caches retrieval results (chunks and metrics) for exactly identical queries within a session."""
-    
+
     def __init__(self, cache_dir: str = DEFAULT_CACHE_DIR):
         db_path = os.path.join(cache_dir, "retrieval_cache.db")
         schema = """
@@ -138,7 +137,7 @@ class RetrievalCache(BaseSQLiteCache):
 
 class LLMCache(BaseSQLiteCache):
     """Caches LLM responses for queries with identical context within a session."""
-    
+
     def __init__(self, cache_dir: str = DEFAULT_CACHE_DIR):
         db_path = os.path.join(cache_dir, "llm_cache.db")
         schema = """
@@ -163,33 +162,33 @@ class LLMCache(BaseSQLiteCache):
         """Retrieve cached LLM response if available."""
         context_hash = self._compute_context_hash(retrieved_chunks)
         cache_key = self._hash_key(session_id, query, context_hash)
-        
+
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT response_json FROM llm_cache WHERE cache_key = ?", 
+                "SELECT response_json FROM llm_cache WHERE cache_key = ?",
                 (cache_key,)
             )
             row = cursor.fetchone()
-            
+
         if row:
             try:
                 logger.debug(f"LLM cache hit for query: '{query[:50]}...'")
                 return json.loads(row[0])
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode cached LLM JSON for key {cache_key}")
-                
+
         return None
 
     def set_cache(self, session_id: str, query: str, retrieved_chunks: List[str], response_data: Dict[str, Any]):
         """Save LLM response result to cache."""
         context_hash = self._compute_context_hash(retrieved_chunks)
         cache_key = self._hash_key(session_id, query, context_hash)
-        
+
         with self._lock:
             self._conn.execute(
                 """
-                INSERT OR REPLACE INTO llm_cache 
-                (cache_key, session_id, query, context_hash, response_json) 
+                INSERT OR REPLACE INTO llm_cache
+                (cache_key, session_id, query, context_hash, response_json)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (cache_key, session_id, query, context_hash, json.dumps(response_data))
@@ -202,6 +201,7 @@ _retrieval_cache: Optional[RetrievalCache] = None
 _llm_cache: Optional[LLMCache] = None
 _global_cache_lock = threading.Lock()
 
+
 def get_retrieval_cache() -> RetrievalCache:
     """Get or create singleton RetrievalCache."""
     global _retrieval_cache
@@ -209,6 +209,7 @@ def get_retrieval_cache() -> RetrievalCache:
         if _retrieval_cache is None:
             _retrieval_cache = RetrievalCache()
         return _retrieval_cache
+
 
 def get_llm_cache() -> LLMCache:
     """Get or create singleton LLMCache."""
