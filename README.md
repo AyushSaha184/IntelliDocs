@@ -2,7 +2,7 @@
 
 IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system that turns local document repositories into interactive knowledge bases. It features a **Multi-Agent Orchestration Pipeline** that routes every query through a Planner → Router → Retriever → Synthesizer → Validator chain, a **Low-Latency Streaming Pipeline** with asynchronous post-stream safety validation, a **Hybrid Search Pipeline** combining dense vector search and BM25 sparse retrieval, and a **Human-in-the-Loop Review System** for high-confidence deployments.
 
-**[🚀 Live Demo](https://enterprise-ai-assistant-rn3m.onrender.com)**
+**[🚀 Live Demo](https://intelli-docs-five.vercel.app)**
 
 ## Table of Contents
 
