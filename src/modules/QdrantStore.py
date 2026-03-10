@@ -78,23 +78,23 @@ class QdrantSessionStore:
                 ),
             )
 
-        try:
-            self.client.create_payload_index(
-                collection_name=self.collection_name,
-                field_name="session_id",
-                field_schema=models.PayloadSchemaType.KEYWORD,
-            )
-        except Exception:
-            pass
-
-        try:
-            self.client.create_payload_index(
-                collection_name=self.collection_name,
-                field_name="document_id",
-                field_schema=models.PayloadSchemaType.KEYWORD,
-            )
-        except Exception:
-            pass
+        # Create payload indexes for efficient filtering
+        for field, schema in [
+            ("session_id", models.PayloadSchemaType.KEYWORD),
+            ("document_id", models.PayloadSchemaType.KEYWORD),
+            ("chat_id", models.PayloadSchemaType.KEYWORD),
+            ("user_id", models.PayloadSchemaType.KEYWORD),
+            ("is_guest", models.PayloadSchemaType.BOOL),
+            ("content_hash", models.PayloadSchemaType.KEYWORD),
+        ]:
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field,
+                    field_schema=schema,
+                )
+            except Exception:
+                pass
 
     def add_vectors(
         self,
@@ -116,6 +116,11 @@ class QdrantSessionStore:
             payload["session_id"] = self.session_id
             payload.setdefault("chunk_id", chunk_id)
             payload.setdefault("document_id", payload.get("document_id", ""))
+            payload.setdefault("chat_id", payload.get("chat_id", ""))
+            payload.setdefault("user_id", payload.get("user_id", ""))
+            payload.setdefault("is_guest", payload.get("is_guest", False))
+            payload.setdefault("content_hash", payload.get("content_hash", ""))
+            payload.setdefault("created_at", payload.get("created_at", ""))
             payload.setdefault("text", payload.get("text", ""))
 
             points.append(
@@ -249,3 +254,45 @@ def qdrant_collection_count() -> int:
     client = _qdrant_client()
     result = client.count(collection_name=QDRANT_COLLECTION, exact=False)
     return int(result.count or 0)
+
+
+def delete_points_by_chat(chat_id: str, user_id: str = None) -> None:
+    """Delete all Qdrant points for a specific chat_id, optionally scoped to user."""
+    client = _qdrant_client()
+    must = [
+        models.FieldCondition(key="chat_id", match=models.MatchValue(value=chat_id)),
+    ]
+    if user_id:
+        must.append(
+            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+        )
+    client.delete(
+        collection_name=QDRANT_COLLECTION,
+        points_selector=models.FilterSelector(filter=models.Filter(must=must)),
+        wait=False,
+    )
+
+
+def delete_points_by_session_batch(session_ids: List[str]) -> None:
+    """Batch delete Qdrant points for multiple session_ids."""
+    if not session_ids:
+        return
+    client = _qdrant_client()
+    for sid in session_ids:
+        try:
+            client.delete(
+                collection_name=QDRANT_COLLECTION,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="session_id",
+                                match=models.MatchValue(value=sid),
+                            )
+                        ]
+                    )
+                ),
+                wait=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to batch-delete qdrant points for session {sid}: {e}")

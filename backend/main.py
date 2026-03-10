@@ -13,8 +13,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.routes import router
+from backend.api.chat_routes import chat_router
 from backend.database import init_db
+from backend.database.chat_models import Chat, ChatMessage, Document, CleanupJob  # ensure tables created
 from backend.services.cleanup_scheduler import start_cleanup_scheduler, stop_cleanup_scheduler
+from backend.services.cascade_service import start_cleanup_worker, stop_cleanup_worker
 from config.config import (
     CORS_ALLOWED_ORIGINS,
     RATE_LIMIT_REQUESTS,
@@ -65,7 +68,9 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     init_db()
     start_cleanup_scheduler(interval_minutes=10)
+    start_cleanup_worker(interval_seconds=60)
     yield
+    stop_cleanup_worker()
     stop_cleanup_scheduler()
 
 
@@ -100,6 +105,9 @@ async def rate_limit_middleware(request: Request, call_next):
 
 
 # API routes under /api prefix
+# Include chat_router first so chat-aware endpoints (/upload, /ask, /process, /status)
+# are matched before legacy session endpoints with the same paths.
+app.include_router(chat_router, prefix="/api")
 app.include_router(router, prefix="/api")
 
 # Serve static frontend files

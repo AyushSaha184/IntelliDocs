@@ -1,7 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import ChatMessage from './components/ChatMessage';
 import ChatInput from './components/ChatInput';
-import { uploadDocument, checkStatus, askQuestionStream, processSession } from './services/api';
+import {
+    uploadDocument, checkStatus, askQuestionStream, processSession,
+    createGuestSession, deleteGuestSession,
+    createChat, listChats, deleteChat, listMessages,
+} from './services/api';
 import { supabase } from './services/supabase';
 
 export default function App() {
@@ -10,30 +14,50 @@ export default function App() {
     const [uploadedFiles, setUploadedFiles] = useState([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [isProcessed, setIsProcessed] = useState(false);
-    const [sessionId, setSessionId] = useState(null);
+
+    // Chat state
+    const [activeChatId, setActiveChatId] = useState(null);
+    const [chatList, setChatList] = useState([]);
+    const [showHistory, setShowHistory] = useState(false);
+
+    // Auth / guest state
     const [user, setUser] = useState(null);
+    const [guestSessionId, setGuestSessionId] = useState(null);
+    const [showAuthModal, setShowAuthModal] = useState(true);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [authError, setAuthError] = useState('');
     const [authLoading, setAuthLoading] = useState(false);
     const [showEmailAuth, setShowEmailAuth] = useState(false);
+
+    // Upload error state (only shown when limit hit)
+    const [uploadError, setUploadError] = useState(null);
+
     const messagesEndRef = useRef(null);
+    const guestSessionRef = useRef(null);
+
+    const isGuest = !user;
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
+    // Auth listener
     useEffect(() => {
         if (!supabase) return;
 
         let mounted = true;
         supabase.auth.getSession().then(({ data }) => {
             if (!mounted) return;
-            setUser(data?.session?.user || null);
+            const u = data?.session?.user || null;
+            setUser(u);
+            if (u) setShowAuthModal(false);
         });
 
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-            setUser(session?.user || null);
+            const u = session?.user || null;
+            setUser(u);
+            if (u) setShowAuthModal(false);
         });
 
         return () => {
@@ -41,6 +65,56 @@ export default function App() {
             subscription.unsubscribe();
         };
     }, []);
+
+    const initGuestSession = useCallback(async () => {
+        if (guestSessionId) return guestSessionId;
+        const data = await createGuestSession();
+        const sid = data.session_id;
+        setGuestSessionId(sid);
+        guestSessionRef.current = sid;
+        return sid;
+    }, [guestSessionId]);
+
+    // Cleanup guest session on tab close
+    useEffect(() => {
+        const handleBeforeUnload = () => {
+            const sid = guestSessionRef.current;
+            if (sid) deleteGuestSession(sid);
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, []);
+
+    // Load chat list for logged-in users
+    const refreshChats = useCallback(async () => {
+        if (isGuest) return;
+        try {
+            const data = await listChats();
+            setChatList(data.chats || []);
+        } catch { /* ignore */ }
+    }, [isGuest]);
+
+    useEffect(() => {
+        if (!isGuest) refreshChats();
+    }, [isGuest, refreshChats]);
+
+    // Load messages when switching chats
+    useEffect(() => {
+        if (!activeChatId) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const data = await listMessages(activeChatId, 200, 0, isGuest ? guestSessionId : null);
+                if (cancelled) return;
+                setMessages((data.messages || []).map(m => ({
+                    role: m.role,
+                    content: m.content,
+                    timestamp: new Date(m.created_at).getTime(),
+                })));
+            } catch { /* ignore */ }
+        })();
+        return () => { cancelled = true; };
+    }, [activeChatId, isGuest, guestSessionId]);
 
     const handleSignIn = async () => {
         if (!supabase) return;
@@ -83,7 +157,7 @@ export default function App() {
     };
 
     const handleSend = async (text) => {
-        if (!text.trim() || isGenerating || !isProcessed || !sessionId) return;
+        if (!text.trim() || isGenerating || !isProcessed || !activeChatId) return;
 
         const userMessage = { role: 'user', content: text, timestamp: Date.now() };
         setMessages(prev => [...prev.filter(m => !(m.role === 'system' && m.isSuccess)), userMessage]);
@@ -105,9 +179,9 @@ export default function App() {
 
         try {
             await askQuestionStream(
-                sessionId,
+                activeChatId,
                 text,
-                {},
+                { session_id: isGuest ? guestSessionId : null },
                 (token) => {
                     setMessages(prev => prev.map(m =>
                         m.id === msgId ? { ...m, content: m.content + token } : m
@@ -125,7 +199,7 @@ export default function App() {
                 },
                 () => {
                     updateMsg({
-                        content: '⚠️ Verification failed. This response was removed for safety.',
+                        content: 'Verification failed. This response was removed for safety.',
                         isStreaming: false,
                         verifying: false,
                         isError: true,
@@ -154,37 +228,58 @@ export default function App() {
         }
     };
 
-    const handleUpload = async (file, existingSessionId = null) => {
+    const handleUpload = async (file, existingChatId = null) => {
+        setUploadError(null);
         try {
-            const sid = existingSessionId || sessionId;
-            const result = await uploadDocument(file, sid);
+            // For guests, ensure a session exists
+            let sessionId = guestSessionId;
+            if (isGuest && !sessionId) {
+                sessionId = await initGuestSession();
+            }
 
-            setSessionId(result.session_id);
+            const chatId = existingChatId || activeChatId;
+            const result = await uploadDocument(file, chatId, sessionId);
+
+            // Set active chat from response
+            if (result.chat_id) {
+                setActiveChatId(result.chat_id);
+                if (!isGuest) refreshChats();
+            }
 
             setUploadedFiles(prev => [...prev, {
                 fileName: file.name,
                 fileSize: file.size,
                 uploadedAt: Date.now(),
-                sessionId: result.session_id,
+                chatId: result.chat_id,
                 isProcessed: false
             }]);
 
             setIsProcessed(false);
-
             return result;
         } catch (error) {
-            console.error('Upload error:', error);
+            // Show upload error only when limit is hit
+            if (error.error_code) {
+                const messages = {
+                    GUEST_LIMIT_REACHED: 'Guest upload limit reached (3 documents). Sign in for more.',
+                    PER_CHAT_LIMIT_REACHED: 'This chat has reached the document limit (15).',
+                    ACCOUNT_LIMIT_REACHED: 'Account document limit reached (40). Delete a chat to free space.',
+                    DUPLICATE_DOCUMENT: 'This file has already been uploaded to this chat.',
+                };
+                setUploadError(messages[error.error_code] || error.detail);
+            } else {
+                console.error('Upload error:', error);
+            }
             throw error;
         }
     };
 
     const handleProcess = async () => {
-        if (!sessionId) return;
+        if (!activeChatId) return;
 
         setIsProcessing(true);
 
         try {
-            await processSession(sessionId);
+            await processSession(activeChatId, isGuest ? guestSessionId : null);
 
             let status = 'processing';
             let attempts = 0;
@@ -193,7 +288,7 @@ export default function App() {
             while (status === 'processing' && attempts < maxAttempts) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
-                const statusResult = await checkStatus(sessionId);
+                const statusResult = await checkStatus(activeChatId, isGuest ? guestSessionId : null);
                 status = statusResult.status;
 
                 if (status === 'ready') {
@@ -241,13 +336,46 @@ export default function App() {
         setUploadedFiles([]);
         setIsProcessing(false);
         setIsProcessed(false);
-        setSessionId(null);
+        setActiveChatId(null);
+        setUploadError(null);
     };
 
-    if (supabase && !user) {
+    const handleDeleteChat = async (chatId) => {
+        try {
+            await deleteChat(chatId, isGuest ? guestSessionId : null);
+            if (activeChatId === chatId) handleClear();
+            refreshChats();
+        } catch { /* ignore */ }
+    };
+
+    const handleSelectChat = async (chat) => {
+        setActiveChatId(chat.id);
+        setUploadedFiles([]);
+        setUploadError(null);
+        setIsProcessed(true); // assume previously processed chats are ready
+    };
+
+    const handleNewChat = () => {
+        handleClear();
+    };
+
+    const handleContinueAsGuest = () => {
+        setShowAuthModal(false);
+    };
+
+    if (supabase && showAuthModal && !user) {
         return (
             <div className="relative flex h-screen items-center justify-center overflow-hidden text-[#f5efff]">
-                <div className="glass-panel w-full max-w-md m-3 p-6 rounded-3xl">
+                <div className="glass-panel w-full max-w-md m-3 p-6 rounded-3xl relative">
+                    <button
+                        onClick={handleContinueAsGuest}
+                        className="absolute top-4 right-4 text-white/60 hover:text-white transition-colors"
+                        aria-label="Close"
+                    >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
                     <h1 className="text-white font-semibold text-xl mb-4">Sign in to IntelliDocs</h1>
                     <div className="space-y-3">
                         <button
@@ -265,12 +393,20 @@ export default function App() {
                         </div>
 
                         {!showEmailAuth ? (
-                            <button
-                                onClick={() => setShowEmailAuth(true)}
-                                className="w-full rounded-xl bg-indigo-500 px-4 py-3 text-base font-medium text-white hover:bg-indigo-400 transition-colors"
-                            >
-                                Continue with Email
-                            </button>
+                            <>
+                                <button
+                                    onClick={() => setShowEmailAuth(true)}
+                                    className="w-full rounded-xl bg-indigo-500 px-4 py-3 text-base font-medium text-white hover:bg-indigo-400 transition-colors"
+                                >
+                                    Continue with Email
+                                </button>
+                                <button
+                                    onClick={handleContinueAsGuest}
+                                    className="w-full rounded-xl border border-white/20 px-4 py-3 text-base font-medium text-white/80 hover:bg-white/10 transition-colors"
+                                >
+                                    Continue as Guest
+                                </button>
+                            </>
                         ) : (
                             <>
                                 <input
@@ -324,7 +460,7 @@ export default function App() {
             <div className="pointer-events-none absolute top-10 -right-20 h-96 w-96 rounded-full bg-violet-400/20 blur-3xl" />
 
             <div className="glass-panel hidden md:flex flex-col w-64 lg:w-80 m-3 p-4 lg:p-6 overflow-y-auto flex-shrink-0 text-[#d8cbe9] transition-all duration-300 rounded-3xl">
-                <div className="flex items-center gap-2 mb-8">
+                <div className="flex items-center gap-2 mb-6">
                     <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-fuchsia-400 to-violet-600 flex items-center justify-center shadow-lg shadow-violet-900/50">
                         <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
@@ -333,7 +469,61 @@ export default function App() {
                     <h1 className="text-white font-semibold text-sm sm:text-base">IntelliDocs</h1>
                 </div>
 
-                <h2 className="text-white text-base lg:text-lg font-semibold mb-3">About IntelliDocs</h2>
+                {/* Tab toggle: Info / History */}
+                {!isGuest && (
+                    <div className="flex gap-1 mb-4 rounded-xl bg-white/5 p-1">
+                        <button
+                            onClick={() => setShowHistory(false)}
+                            className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${!showHistory ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white/80'}`}
+                        >
+                            About
+                        </button>
+                        <button
+                            onClick={() => setShowHistory(true)}
+                            className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${showHistory ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white/80'}`}
+                        >
+                            History
+                        </button>
+                    </div>
+                )}
+
+                {showHistory && !isGuest ? (
+                    <div className="flex flex-col flex-1 overflow-hidden">
+                        <button
+                            onClick={handleNewChat}
+                            className="w-full mb-3 rounded-xl border border-white/20 px-3 py-2 text-sm text-white hover:bg-white/10 transition-colors flex items-center gap-2 justify-center"
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                            </svg>
+                            New Chat
+                        </button>
+                        <div className="flex-1 overflow-y-auto space-y-1">
+                            {chatList.length === 0 ? (
+                                <p className="text-xs text-white/40 text-center mt-4">No chats yet</p>
+                            ) : chatList.map(chat => (
+                                <div
+                                    key={chat.id}
+                                    onClick={() => handleSelectChat(chat)}
+                                    className={`group flex items-center justify-between rounded-xl px-3 py-2 cursor-pointer transition-colors ${activeChatId === chat.id ? 'bg-white/15 text-white' : 'text-white/70 hover:bg-white/8 hover:text-white'}`}
+                                >
+                                    <span className="truncate text-sm">{chat.title || 'Untitled'}</span>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}
+                                        className="opacity-0 group-hover:opacity-100 text-white/40 hover:text-red-300 transition-all ml-2 flex-shrink-0"
+                                        title="Delete chat"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        <h2 className="text-white text-base lg:text-lg font-semibold mb-3">About IntelliDocs</h2>
                 <p className="text-xs lg:text-sm leading-relaxed mb-6 text-[#d8cbe9]">
                     This RAG-powered AI assistant enables organizations to instantly unlock insights from their internal knowledge base. It intelligently processes diverse data sources and delivers precise, context-aware answers in real time. Built for seamless integration into existing applications and workflows, the system supports both long-form analytical queries and quick factual lookups, helping teams research faster and make better-informed decisions.
                 </p>
@@ -347,6 +537,8 @@ export default function App() {
                     <li>Product documentation</li>
                     <li>Website content</li>
                 </ul>
+                    </>
+                )}
             </div>
 
             <div className="flex flex-col flex-1 overflow-hidden relative z-10">
@@ -360,21 +552,31 @@ export default function App() {
                         <h1 className="text-white font-semibold text-sm">IntelliDocs</h1>
                     </div>
 
-                    <button
-                        onClick={handleClear}
-                        className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
-                        disabled={messages.length === 0 && uploadedFiles.length === 0}
-                    >
-                        Clear
-                    </button>
-                    {supabase && user && (
+                    <div className="flex items-center gap-2">
                         <button
-                            onClick={handleSignOut}
-                            className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20 ml-2"
+                            onClick={handleClear}
+                            className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
+                            disabled={messages.length === 0 && uploadedFiles.length === 0}
                         >
-                            Sign out
+                            Clear
                         </button>
-                    )}
+                        {supabase && user && (
+                            <button
+                                onClick={handleSignOut}
+                                className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
+                            >
+                                Sign out
+                            </button>
+                        )}
+                        {supabase && isGuest && (
+                            <button
+                                onClick={() => setShowAuthModal(true)}
+                                className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
+                            >
+                                Sign in
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto">
@@ -450,6 +652,18 @@ export default function App() {
                 </div>
 
                 <div className="flex-shrink-0 pb-3 px-3 sm:px-4">
+                    {uploadError && (
+                        <div className="max-w-3xl mx-auto w-full mb-2">
+                            <div className="flex items-center gap-2 rounded-xl bg-red-500/15 border border-red-400/30 px-3 py-2 text-red-200 text-sm">
+                                <span className="flex-1">{uploadError}</span>
+                                <button onClick={() => setUploadError(null)} className="text-red-300 hover:text-white">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    )}
                     <div className="glass-panel max-w-3xl mx-auto w-full rounded-2xl px-3 sm:px-4 py-3 sm:py-4">
                         <ChatInput
                             onSend={handleSend}

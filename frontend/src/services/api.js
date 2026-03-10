@@ -13,14 +13,89 @@ async function buildAuthHeaders(extra = {}) {
     return headers;
 }
 
-export async function uploadDocument(file, sessionId = null) {
+export async function createGuestSession() {
+    const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
+    const response = await fetch(`${BASE_URL}/api/guest/session`, {
+        method: 'POST',
+        headers,
+    });
+    if (!response.ok) throw new Error('Failed to create guest session');
+    return response.json();
+}
+
+export function deleteGuestSession(sessionId) {
+    const url = `${BASE_URL}/api/guest/session/${sessionId}`;
+    fetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
+}
+
+export async function createChat(title = 'New Chat', sessionId = null) {
+    const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
+    const body = { title };
+    if (sessionId) body.session_id = sessionId;
+
+    const response = await fetch(`${BASE_URL}/api/chats`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to create chat');
+    }
+    return response.json();
+}
+
+export async function listChats(limit = 50, offset = 0) {
+    const headers = await buildAuthHeaders();
+    const response = await fetch(`${BASE_URL}/api/chats?limit=${limit}&offset=${offset}`, { headers });
+    if (!response.ok) throw new Error('Failed to list chats');
+    return response.json();
+}
+
+export async function renameChat(chatId, title, version) {
+    const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
+    const response = await fetch(`${BASE_URL}/api/chats/${chatId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ title, version }),
+    });
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || err.error_code || 'Rename failed');
+    }
+    return response.json();
+}
+
+export async function deleteChat(chatId, sessionId = null) {
+    const headers = await buildAuthHeaders();
+    const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const response = await fetch(`${BASE_URL}/api/chats/${chatId}${qs}`, {
+        method: 'DELETE',
+        headers,
+    });
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || 'Delete failed');
+    }
+    return response.json();
+}
+
+export async function listMessages(chatId, limit = 200, offset = 0, sessionId = null) {
+    const headers = await buildAuthHeaders();
+    const sessionParam = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : '';
+    const response = await fetch(
+        `${BASE_URL}/api/chats/${chatId}/messages?limit=${limit}&offset=${offset}${sessionParam}`,
+        { headers }
+    );
+    if (!response.ok) throw new Error('Failed to list messages');
+    return response.json();
+}
+
+export async function uploadDocument(file, chatId = null, sessionId = null) {
     const formData = new FormData();
     formData.append('file', file);
-
-    // Add session_id if provided (to add file to existing session)
-    if (sessionId) {
-        formData.append('session_id', sessionId);
-    }
+    if (chatId) formData.append('chat_id', chatId);
+    if (sessionId) formData.append('session_id', sessionId);
 
     const headers = await buildAuthHeaders();
     const response = await fetch(`${BASE_URL}/api/upload`, {
@@ -31,99 +106,83 @@ export async function uploadDocument(file, sessionId = null) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || `Upload failed (${response.status})`);
-    }
-
-    return response.json(); // Returns { session_id, status, filename, message }
-}
-
-export async function checkStatus(sessionId) {
-    const headers = await buildAuthHeaders();
-    const response = await fetch(`${BASE_URL}/api/status/${sessionId}`, { headers });
-
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || `Status check failed (${response.status})`);
-    }
-
-    return response.json(); // Returns { session_id, status, filename, chunks_count }
-}
-
-export async function processSession(sessionId) {
-    const headers = await buildAuthHeaders();
-    const response = await fetch(`${BASE_URL}/api/process/${sessionId}`, {
-        method: 'POST',
-        headers,
-    });
-
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || `Process failed (${response.status})`);
+        const err = new Error(error.detail || `Upload failed (${response.status})`);
+        err.error_code = error.error_code;
+        throw err;
     }
 
     return response.json();
 }
 
-export async function askQuestion(sessionId, question, opts = {}) {
+export async function checkStatus(chatId, sessionId = null) {
+    const headers = await buildAuthHeaders();
+    const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const response = await fetch(`${BASE_URL}/api/status/${chatId}${qs}`, { headers });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || `Status check failed (${response.status})`);
+    }
+    return response.json();
+}
+
+export async function processSession(chatId, sessionId = null) {
+    const headers = await buildAuthHeaders();
+    const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    const response = await fetch(`${BASE_URL}/api/process/${chatId}${qs}`, {
+        method: 'POST',
+        headers,
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || `Process failed (${response.status})`);
+    }
+    return response.json();
+}
+
+export async function askQuestion(chatId, question, opts = {}) {
     const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
     const response = await fetch(`${BASE_URL}/api/ask`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-            session_id: sessionId,
+            chat_id: chatId,
+            session_id: opts.session_id,
             question,
             top_k: opts.top_k || 5,
-            ...opts
+            ...opts,
         }),
     });
-
     if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.detail || `Query failed (${response.status})`);
     }
-
-    return response.json(); // Returns { answer, query, retrieved_chunks, ... }
+    return response.json();
 }
 
 export async function healthCheck() {
     const headers = await buildAuthHeaders();
     const response = await fetch(`${BASE_URL}/api/health`, { headers });
-
-    if (!response.ok) {
-        throw new Error(`Health check failed (${response.status})`);
-    }
-
+    if (!response.ok) throw new Error(`Health check failed (${response.status})`);
     return response.json();
 }
 
-/**
- * Stream an answer from the backend via SSE.
- *
- * @param {string} sessionId
- * @param {string} question
- * @param {object} opts  - Optional top_k, system_prompt, temperature, max_tokens
- * @param {function} onChunk    - Called with each token string as it arrives
- * @param {function} onMeta     - Called once with {sources, retrieval_scores, metadata}
- * @param {function} onSuccess  - Called once with {grounded, confidence}
- * @param {function} onWarning  - Called once with {grounded, confidence, message} if validation fails
- * @param {function} onError    - Called with an error message string
- */
 export async function askQuestionStream(
-    sessionId,
+    chatId,
     question,
     opts = {},
-    onChunk = () => { },
-    onMeta = () => { },
-    onSuccess = () => { },
-    onWarning = () => { },
-    onError = () => { },
+    onChunk = () => {},
+    onMeta = () => {},
+    onSuccess = () => {},
+    onWarning = () => {},
+    onError = () => {},
 ) {
     const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
     const response = await fetch(`${BASE_URL}/api/ask/stream`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-            session_id: sessionId,
+            chat_id: chatId,
+            session_id: opts.session_id,
             question,
             top_k: opts.top_k || 5,
             ...opts,
@@ -146,7 +205,7 @@ export async function askQuestionStream(
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
-        buffer = lines.pop(); // keep incomplete last line
+        buffer = lines.pop();
 
         for (const line of lines) {
             if (!line.startsWith('data:')) continue;
@@ -159,8 +218,7 @@ export async function askQuestionStream(
                 else if (evt.event === 'success') onSuccess(evt.data);
                 else if (evt.event === 'warning') onWarning(evt.data);
                 else if (evt.event === 'error') onError(evt.data);
-            } catch (_) { /* ignore malformed lines */ }
+            } catch (_) {}
         }
     }
 }
-
