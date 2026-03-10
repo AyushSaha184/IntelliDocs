@@ -406,7 +406,7 @@ Deploy via `render.yaml` (blueprint auto-configures DB, env vars, and disk):
 
 Every `POST /ask` request passes through `AgentOrchestrator.run()`, which coordinates a chain of specialized agents:
 
-![Multi-Agent Orchestration](Demo/MultiAgent.png)
+![Multi-Agent Orchestration](https://postimg.cc/v4N9TGNN)
 
 **Guardrails:**
 
@@ -537,11 +537,11 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 
 ### Architecture Diagram
 
-![Architecture Diagram](Demo/Architecture_Diagram.png)
+![Architecture Diagram](https://postimg.cc/3kRm3kn6)
 
 ### Data Flow Diagram
 
-![Data Flow Diagram](Demo/DataFlow_Diagram.png)
+![Data Flow Diagram](https://postimg.cc/MfmVpRCb)
 
 ## API Reference
 
