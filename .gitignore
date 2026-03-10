@@ -45,11 +45,7 @@ render.yaml
 # Data and logs
 data/
 logs/
-Demo/*
-!Demo/Architecture_Diagram.png
-!Demo/DataFlow_Diagram.png
-!Demo/MultiAgent.png
-
+Demo/
 
 # Runtime-generated index and cache files (never commit)
 data/vector_store/bm25_index.pkl
@@ -64,6 +60,7 @@ data/.parse_cache/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/
 
 uninstall.txt
 server.bat
