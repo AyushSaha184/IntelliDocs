@@ -538,11 +538,11 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 
 ### Architecture Diagram
 
-![Architecture Diagram](https://postimg.cc/3kRm3kn6)
+![Architecture Diagram]([https://postimg.cc/3kRm3kn6](https://i.postimg.cc/Bn5gcDDq/Architecture-Diagram.png)
 
 ### Data Flow Diagram
 
-![Data Flow Diagram](https://postimg.cc/MfmVpRCb)
+![Data Flow Diagram]([https://postimg.cc/MfmVpRCb](https://i.postimg.cc/Zn1cjxjg/Data-Flow-Diagram.png)
 
 ## API Reference
 
