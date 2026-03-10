@@ -2,7 +2,7 @@
 
 IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RAG) system that turns local document repositories into interactive knowledge bases. It features a **Multi-Agent Orchestration Pipeline** that routes every query through a Planner → Router → Retriever → Synthesizer → Validator chain, a **Low-Latency Streaming Pipeline** with asynchronous post-stream safety validation, a **Hybrid Search Pipeline** combining dense vector search and BM25 sparse retrieval, and a **Human-in-the-Loop Review System** for high-confidence deployments.
 
-**[🚀 Live Demo](https://enterprise-ai-assistant-rn3m.onrender.com)**
+**[🚀 Live Demo](https://intelli-docs-five.vercel.app)**
 
 ## Table of Contents
 
@@ -406,7 +406,8 @@ Deploy via `render.yaml` (blueprint auto-configures DB, env vars, and disk):
 
 Every `POST /ask` request passes through `AgentOrchestrator.run()`, which coordinates a chain of specialized agents:
 
-![Multi-Agent Orchestration](https://postimg.cc/v4N9TGNN)
+![Multi-Agent Orchestration](https://i.postimg.cc/g0YKMJqm/Multi-Agent.png)
+
 
 **Guardrails:**
 
@@ -537,11 +538,11 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 
 ### Architecture Diagram
 
-![Architecture Diagram](https://postimg.cc/3kRm3kn6)
+![Architecture Diagram](https://i.postimg.cc/Bn5gcDDq/Architecture-Diagram.png)
 
 ### Data Flow Diagram
 
-![Data Flow Diagram](https://postimg.cc/MfmVpRCb)
+![Data Flow Diagram](https://i.postimg.cc/Zn1cjxjg/Data-Flow-Diagram.png)
 
 ## API Reference
 
@@ -557,10 +558,6 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 | `POST` | `/reviews/{id}/correct` | Submit a corrected answer for a pending review |
 | `GET` | `/eval/summary` | Rolling evaluation metrics (precision, recall, latency, route distribution) |
 | `POST` | `/stress-test/{session_id}` | Run adversarial stress tests (requires `ENABLE_STRESS_TEST=1`) |
-
-### Deployment Architecture Diagram
-
-![Deployment Architecture](Demo/Deployment_Architecture.png)
 
 ## Requirements
 
