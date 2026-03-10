@@ -538,11 +538,11 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 
 ### Architecture Diagram
 
-![Architecture Diagram]([https://postimg.cc/3kRm3kn6](https://i.postimg.cc/Bn5gcDDq/Architecture-Diagram.png)
+![Architecture Diagram](https://i.postimg.cc/Bn5gcDDq/Architecture-Diagram.png)
 
 ### Data Flow Diagram
 
-![Data Flow Diagram]([https://postimg.cc/MfmVpRCb](https://i.postimg.cc/Zn1cjxjg/Data-Flow-Diagram.png)
+![Data Flow Diagram](https://i.postimg.cc/Zn1cjxjg/Data-Flow-Diagram.png)
 
 ## API Reference
 
@@ -558,10 +558,6 @@ Shared singletons (LLM, embedding service, reranker) are initialized once at ser
 | `POST` | `/reviews/{id}/correct` | Submit a corrected answer for a pending review |
 | `GET` | `/eval/summary` | Rolling evaluation metrics (precision, recall, latency, route distribution) |
 | `POST` | `/stress-test/{session_id}` | Run adversarial stress tests (requires `ENABLE_STRESS_TEST=1`) |
-
-### Deployment Architecture Diagram
-
-![Deployment Architecture](Demo/Deployment_Architecture.png)
 
 ## Requirements
 
