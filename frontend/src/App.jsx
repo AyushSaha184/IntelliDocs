@@ -325,7 +325,9 @@ export default function App() {
         const ta = a.timestamp || 0;
         const tb = b.timestamp || 0;
         if (ta !== tb) return ta - tb;
-        return String(a.id || '').localeCompare(String(b.id || ''));
+        // Keep insertion order for equal timestamps (stable sort) to avoid
+        // assistant messages rendering before the triggering user message.
+        return 0;
     });
 
     return (
