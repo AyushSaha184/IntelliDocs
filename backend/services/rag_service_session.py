@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 
 _session_retrievers: Dict[str, RAGRetriever] = {}
 _session_handlers: Dict[str, QueryHandler] = {}
+_session_chat_history: Dict[str, list] = {}
 _handlers_lock = threading.Lock()
 
 _orchestrator = AgentOrchestrator()
@@ -115,7 +116,34 @@ def clear_session_handler(session_id: str):
             del _session_handlers[session_id]
         if session_id in _session_retrievers:
             del _session_retrievers[session_id]
+        if session_id in _session_chat_history:
+            del _session_chat_history[session_id]
         logger.info(f"Cleared session resources for {session_id}")
+
+
+def get_session_chat_history(session_id: str, limit: int = 6) -> list:
+    """Return recent in-memory chat history for a session."""
+    with _handlers_lock:
+        history = _session_chat_history.get(session_id, [])
+        if limit <= 0:
+            return []
+        return history[-limit:]
+
+
+def append_session_chat_history(session_id: str, user_text: str, assistant_text: str, max_turns: int = 6) -> None:
+    """Append latest Q/A pair to in-memory session history."""
+    u = (user_text or "").strip()
+    a = (assistant_text or "").strip()
+    if not u or not a:
+        return
+
+    with _handlers_lock:
+        history = _session_chat_history.setdefault(session_id, [])
+        history.append({"role": "user", "content": u})
+        history.append({"role": "assistant", "content": a})
+        max_items = max(1, int(max_turns)) * 2
+        if len(history) > max_items:
+            _session_chat_history[session_id] = history[-max_items:]
 
 
 def ask_rag_session(

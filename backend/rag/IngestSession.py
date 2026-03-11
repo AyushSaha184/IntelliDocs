@@ -19,8 +19,6 @@ import hashlib
 import traceback
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
-import psycopg2
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.modules.Chunking import TextChunker
 from src.modules.Embeddings import create_embedding_service
@@ -40,7 +38,6 @@ from config.config import (
     LM_STUDIO_BASE_URL,
     LM_STUDIO_API_KEY,
     VECTOR_BACKEND,
-    postgres_connect_kwargs,
 )
 
 # Import backend-specific utilities from the consolidated Loader module
@@ -229,57 +226,10 @@ def _load_single_file(file_path: Path, session_id: str) -> Tuple[str, str, str]:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
-        # Initialize psycopg2 connection and create document
-        doc_id = f"{session_id[:8]}_{fhash}"
-        file_size = os.path.getsize(str(file_path))
-        
-        try:
-            conn = psycopg2.connect(**postgres_connect_kwargs(connect_timeout=10))
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO documents 
-                    (id, name, path, file_type, pages, file_size, hash, loaded_at, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        path = EXCLUDED.path,
-                        file_type = EXCLUDED.file_type,
-                        pages = EXCLUDED.pages,
-                        file_size = EXCLUDED.file_size,
-                        hash = EXCLUDED.hash,
-                        loaded_at = EXCLUDED.loaded_at,
-                        status = EXCLUDED.status
-                """, (
-                    doc_id, file_name, str(file_path), ext.lstrip('.'),
-                    1, file_size, fhash, datetime.now().isoformat(), "completed" if content.strip() else "failed"
-                ))
-            conn.commit()
-            conn.close()
-        except Exception as db_e:
-            logger.error(f"Failed to save document {file_name} to database: {db_e}")
-
         return (file_name, content, fhash)
 
     except Exception as e:
         logger.error(f"Failed to load {file_name}: {e}")
-        # Log failure state to Database if possible
-        try:
-            conn = psycopg2.connect(**postgres_connect_kwargs(connect_timeout=10))
-            with conn.cursor() as cursor:
-                 cursor.execute("""
-                    INSERT INTO documents 
-                    (id, name, path, file_type, pages, file_size, hash, loaded_at, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status
-                 """, (
-                    f"failed_{int(time.time())}_{file_name}", file_name, str(file_path), file_path.suffix.lstrip('.'),
-                    1, 0, "failed_hash", datetime.now().isoformat(), "failed"
-                 ))
-            conn.commit()
-            conn.close()
-        except Exception as db_err:
-            logger.error(f"Failed to log document error to DB: {db_err}")
-            
         raise
 
 

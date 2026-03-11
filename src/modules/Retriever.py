@@ -30,6 +30,7 @@ except ImportError:
     RANK_BM25_AVAILABLE = False
 
 from src.utils.Logger import get_logger
+from src.modules.VectorStore import SearchResult
 
 logger = get_logger(__name__)
 

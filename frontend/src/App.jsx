@@ -3,10 +3,8 @@ import ChatMessage from './components/ChatMessage';
 import ChatInput from './components/ChatInput';
 import {
     uploadDocument, checkStatus, askQuestionStream, processSession,
-    createGuestSession, deleteGuestSession,
-    createChat, listChats, deleteChat, listMessages, listChatDocuments, clearChatFiles,
+    createSession, deleteSession, listDocuments,
 } from './services/api';
-import { supabase } from './services/supabase';
 
 export default function App() {
     const [messages, setMessages] = useState([]);
@@ -17,57 +15,59 @@ export default function App() {
     const [processingProgress, setProcessingProgress] = useState(null);
     const [pendingFileCount, setPendingFileCount] = useState(0);
     const [clearSignal, setClearSignal] = useState(0);
-
-    // Chat state
-    const [activeChatId, setActiveChatId] = useState(null);
-    const [chatList, setChatList] = useState([]);
-    const [showHistory, setShowHistory] = useState(false);
-    const [chatReloadToken, setChatReloadToken] = useState(0);
-
-    // Auth / guest state
-    const [user, setUser] = useState(null);
-    const [guestSessionId, setGuestSessionId] = useState(null);
-    const [showAuthModal, setShowAuthModal] = useState(true);
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-    const [authError, setAuthError] = useState('');
-    const [authLoading, setAuthLoading] = useState(false);
-    const [showEmailAuth, setShowEmailAuth] = useState(false);
-
-    // Upload error state (only shown when limit hit)
+    const [sessionId, setSessionId] = useState(null);
     const [uploadError, setUploadError] = useState(null);
     const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
     const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
     const [showBugReport, setShowBugReport] = useState(false);
+    const [chatHistory, setChatHistory] = useState([]);
 
     const messagesEndRef = useRef(null);
     const messagesContainerRef = useRef(null);
-    const guestSessionRef = useRef(null);
-    const channelRef = useRef(null);
+    const sessionRef = useRef(null);
+    const cleanupSentRef = useRef(false);
     const processingCancelledRef = useRef(false);
-    const draftChatIdsRef = useRef(new Set());
     const prevMessageCountRef = useRef(0);
-    const prevUserIdRef = useRef(null);
     const bugReportRef = useRef(null);
 
-    const isGuest = !user;
+    // Create session on mount
+    useEffect(() => {
+        (async () => {
+            try {
+                const data = await createSession();
+                setSessionId(data.session_id);
+                sessionRef.current = data.session_id;
+            } catch (e) {
+                console.error('Failed to create session:', e);
+            }
+        })();
+    }, []);
 
-    const resetAppState = useCallback(() => {
-        setMessages([]);
-        setUploadedFiles([]);
-        setIsGenerating(false);
-        setIsProcessing(false);
-        setIsProcessed(false);
-        setProcessingProgress(null);
-        setPendingFileCount(0);
-        setClearSignal(prev => prev + 1);
-        setActiveChatId(null);
-        setChatList([]);
-        setUploadError(null);
-        setChatReloadToken(0);
-        draftChatIdsRef.current.clear();
-        processingCancelledRef.current = true;
-    }, [])
+    // Cleanup session on tab close / refresh
+    useEffect(() => {
+        const fireCleanup = () => {
+            const sid = sessionRef.current;
+            if (!sid || cleanupSentRef.current) return;
+            cleanupSentRef.current = true;
+            deleteSession(sid);
+        };
+
+        const handleBeforeUnload = () => fireCleanup();
+        const handlePageHide = () => fireCleanup();
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') fireCleanup();
+        };
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        window.addEventListener('pagehide', handlePageHide);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            window.removeEventListener('pagehide', handlePageHide);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, []);
 
     useEffect(() => {
         const messageCount = messages.length;
@@ -85,10 +85,8 @@ export default function App() {
     useEffect(() => {
         const viewport = window.visualViewport;
         if (!viewport) return;
-
         const updateHeight = () => setViewportHeight(Math.round(viewport.height));
         updateHeight();
-
         viewport.addEventListener('resize', updateHeight);
         viewport.addEventListener('scroll', updateHeight);
         return () => {
@@ -101,249 +99,11 @@ export default function App() {
         const container = messagesContainerRef.current;
         if (!container) return;
         const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-        if (distanceFromBottom > 50) {
-            setShouldAutoScroll(false);
-        } else {
-            setShouldAutoScroll(true);
-        }
-    };
-
-    // Auth listener
-    useEffect(() => {
-        if (!supabase) return;
-
-        let mounted = true;
-        supabase.auth.getSession().then(({ data }) => {
-            if (!mounted) return;
-            const u = data?.session?.user || null;
-            setUser(u);
-            if (u) setShowAuthModal(false);
-        });
-
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-            const u = session?.user || null;
-            setUser(u);
-            if (u) setShowAuthModal(false);
-        });
-
-        return () => {
-            mounted = false;
-            subscription.unsubscribe();
-        };
-    }, []);
-
-    useEffect(() => {
-        const currentUserId = user?.id || null;
-        if (prevUserIdRef.current === null) {
-            prevUserIdRef.current = currentUserId;
-            return;
-        }
-        if (prevUserIdRef.current !== currentUserId) {
-            resetAppState();
-        }
-        prevUserIdRef.current = currentUserId;
-    }, [user, resetAppState]);
-
-    const initGuestSession = useCallback(async () => {
-        if (guestSessionId) return guestSessionId;
-        const data = await createGuestSession();
-        const sid = data.session_id;
-        setGuestSessionId(sid);
-        guestSessionRef.current = sid;
-        return sid;
-    }, [guestSessionId]);
-
-    // Cleanup guest session on tab close
-    useEffect(() => {
-        const handleBeforeUnload = () => {
-            const sid = guestSessionRef.current;
-            if (sid) deleteGuestSession(sid);
-        };
-        window.addEventListener('beforeunload', handleBeforeUnload);
-        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-    }, []);
-
-    // Load chat list for logged-in users
-    const refreshChats = useCallback(async () => {
-        if (isGuest) return;
-        try {
-            const data = await listChats();
-            setChatList(data.chats || []);
-        } catch { /* ignore */ }
-    }, [isGuest]);
-
-    useEffect(() => {
-        if (!isGuest) refreshChats();
-    }, [isGuest, refreshChats]);
-
-    const broadcastChatSync = useCallback((event, chatId = null) => {
-        try {
-            channelRef.current?.postMessage({ event, chatId, ts: Date.now() });
-        } catch {
-            // ignore cross-tab sync errors
-        }
-    }, []);
-
-    useEffect(() => {
-        if (typeof BroadcastChannel === 'undefined') return;
-        const channel = new BroadcastChannel('rag-assistant-chat-sync');
-        channelRef.current = channel;
-
-        channel.onmessage = (evt) => {
-            const payload = evt?.data;
-            if (!payload || !payload.event) return;
-
-            if (!isGuest) refreshChats();
-            if (payload.chatId && payload.chatId === activeChatId) {
-                setChatReloadToken(prev => prev + 1);
-            }
-        };
-
-        return () => {
-            channel.close();
-            channelRef.current = null;
-        };
-    }, [activeChatId, isGuest, refreshChats]);
-
-    // Load chat state when switching chats
-    useEffect(() => {
-        if (!activeChatId) {
-            setMessages([]);
-            setUploadedFiles([]);
-            setIsProcessed(false);
-            setIsProcessing(false);
-            setProcessingProgress(null);
-            return;
-        }
-
-        let cancelled = false;
-        (async () => {
-            try {
-                const [messageData, docsData] = await Promise.all([
-                    listMessages(activeChatId, 200, 0, isGuest ? guestSessionId : null),
-                    listChatDocuments(activeChatId, isGuest ? guestSessionId : null),
-                ]);
-                if (cancelled) return;
-
-                setMessages((messageData.messages || []).map(m => ({
-                    id: m.id,
-                    role: m.role,
-                    content: m.content,
-                    timestamp: new Date(m.created_at).getTime(),
-                })));
-
-                const nextFiles = (docsData.documents || []).map(d => ({
-                    fileName: d.filename,
-                    fileSize: d.file_size,
-                    uploadedAt: new Date(d.created_at).getTime(),
-                    chatId: activeChatId,
-                    isProcessed: d.status === 'ready',
-                    isFailed: d.status === 'failed',
-                    isExpired: false,
-                }));
-                setUploadedFiles(nextFiles);
-                setIsProcessed(nextFiles.length > 0 && nextFiles.some(f => f.isProcessed));
-            } catch { /* ignore */ }
-        })();
-        return () => { cancelled = true; };
-    }, [activeChatId, isGuest, guestSessionId, chatReloadToken]);
-
-    useEffect(() => {
-        const onFocus = async () => {
-            if (!activeChatId || uploadedFiles.length === 0) return;
-            try {
-                await checkStatus(activeChatId, isGuest ? guestSessionId : null);
-                setUploadedFiles(prev => prev.map(f => ({ ...f, isExpired: false })));
-            } catch (err) {
-                if (err?.status === 404 || err?.error_code === 'CHAT_NOT_FOUND') {
-                    setUploadedFiles(prev => prev.map(f => ({ ...f, isProcessed: false, isExpired: true })));
-                    setIsProcessed(false);
-                    setMessages(prev => ([...prev, {
-                        id: `sys-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                        role: 'system',
-                        content: 'This session has expired. Please re-upload your files to continue.',
-                        timestamp: Date.now(),
-                        isError: true,
-                    }]));
-                }
-            }
-        };
-
-        window.addEventListener('focus', onFocus);
-        return () => window.removeEventListener('focus', onFocus);
-    }, [activeChatId, guestSessionId, isGuest, uploadedFiles.length]);
-
-    const maybeDeleteUnusedDraftChat = useCallback(async () => {
-        if (isGuest || !activeChatId || !draftChatIdsRef.current.has(activeChatId)) return;
-
-        const hasMessages = messages.some(m => m.role === 'user' || m.role === 'assistant');
-        const hasFiles = uploadedFiles.length > 0;
-        if (hasMessages || hasFiles) {
-            draftChatIdsRef.current.delete(activeChatId);
-            return;
-        }
-
-        try {
-            await deleteChat(activeChatId, isGuest ? guestSessionId : null);
-            draftChatIdsRef.current.delete(activeChatId);
-            if (activeChatId) {
-                setActiveChatId(null);
-                setMessages([]);
-                setUploadedFiles([]);
-                setIsProcessed(false);
-            }
-            refreshChats();
-        } catch {
-            // ignore cleanup errors
-        }
-    }, [activeChatId, guestSessionId, isGuest, messages, refreshChats, uploadedFiles]);
-
-    const handleSignIn = async () => {
-        if (!supabase) return;
-        setAuthError('');
-        setAuthLoading(true);
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) setAuthError(error.message);
-        setAuthLoading(false);
-    };
-
-    const handleSignUp = async () => {
-        if (!supabase) return;
-        setAuthError('');
-        setAuthLoading(true);
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) setAuthError(error.message);
-        setAuthLoading(false);
-    };
-
-    const handleSignOut = async () => {
-        if (!supabase) return;
-        await supabase.auth.signOut();
-        resetAppState();
-    };
-
-    const handleGoogleSignIn = async () => {
-        if (!supabase) return;
-        setAuthError('');
-        setAuthLoading(true);
-        const { error } = await supabase.auth.signInWithOAuth({
-            provider: 'google',
-            options: {
-                redirectTo: window.location.origin,
-            },
-        });
-        if (error) {
-            setAuthError(error.message);
-            setAuthLoading(false);
-        }
+        setShouldAutoScroll(distanceFromBottom <= 50);
     };
 
     const handleSend = async (text) => {
-        if (!text.trim() || isGenerating || !isProcessed || !activeChatId) return;
-
-        draftChatIdsRef.current.delete(activeChatId);
-        broadcastChatSync('message-sent', activeChatId);
-        if (!isGuest) refreshChats();
+        if (!text.trim() || isGenerating || !isProcessed || !sessionId) return;
 
         const userMessageTs = Date.now();
         const userMessage = {
@@ -354,6 +114,8 @@ export default function App() {
         };
         setMessages(prev => [...prev.filter(m => !(m.role === 'system' && m.isSuccess)), userMessage]);
         setIsGenerating(true);
+
+        const newHistory = [...chatHistory, { role: 'user', content: text }];
 
         const msgId = Date.now();
         setMessages(prev => [...prev, {
@@ -369,12 +131,14 @@ export default function App() {
         const updateMsg = (patch) =>
             setMessages(prev => prev.map(m => m.id === msgId ? { ...m, ...patch } : m));
 
+        let assistantAnswer = '';
         try {
             await askQuestionStream(
-                activeChatId,
+                sessionId,
                 text,
-                { session_id: isGuest ? guestSessionId : null },
+                { chat_history: newHistory },
                 (token) => {
+                    assistantAnswer += token;
                     setMessages(prev => prev.map(m =>
                         m.id === msgId ? { ...m, content: m.content + token } : m
                     ));
@@ -388,6 +152,11 @@ export default function App() {
                         confidence: result.confidence,
                     });
                     setIsGenerating(false);
+                    setChatHistory(prev => [
+                        ...prev,
+                        { role: 'user', content: text },
+                        { role: 'assistant', content: assistantAnswer },
+                    ]);
                 },
                 () => {
                     updateMsg({
@@ -420,31 +189,20 @@ export default function App() {
         }
     };
 
-    const handleUpload = async (file, existingChatId = null, options = {}) => {
+    const handleUpload = async (file, _unusedChatId = null, options = {}) => {
         setUploadError(null);
         try {
-            // For guests, ensure a session exists
-            let sessionId = guestSessionId;
-            if (isGuest && !sessionId) {
-                sessionId = await initGuestSession();
-            }
+            const result = await uploadDocument(file, sessionId, options);
 
-            const chatId = existingChatId || activeChatId;
-            const result = await uploadDocument(file, chatId, sessionId, options);
-
-            // Set active chat from response
-            if (result.chat_id) {
-                draftChatIdsRef.current.delete(result.chat_id);
-                setActiveChatId(result.chat_id);
-                if (!isGuest && !chatId) refreshChats();
-                broadcastChatSync('upload-complete', result.chat_id);
+            if (result.session_id && !sessionId) {
+                setSessionId(result.session_id);
+                sessionRef.current = result.session_id;
             }
 
             setUploadedFiles(prev => [...prev, {
                 fileName: file.name,
                 fileSize: file.size,
                 uploadedAt: Date.now(),
-                chatId: result.chat_id,
                 isProcessed: false,
                 isFailed: false,
                 isExpired: false,
@@ -453,18 +211,13 @@ export default function App() {
             setIsProcessed(false);
             return result;
         } catch (error) {
-            if (error?.name === 'AbortError') {
-                throw error;
-            }
-            // Show upload error only when limit is hit
+            if (error?.name === 'AbortError') throw error;
             if (error.error_code) {
-                const messages = {
-                    GUEST_LIMIT_REACHED: 'Guest upload limit reached (5 documents). Sign in for more.',
-                    PER_CHAT_LIMIT_REACHED: 'This chat has reached the document limit (15).',
-                    ACCOUNT_LIMIT_REACHED: 'Account document limit reached (40). Delete a chat to free space.',
-                    DUPLICATE_DOCUMENT: 'This file is already uploading or stored in this chat.',
+                const errorMessages = {
+                    SESSION_LIMIT_REACHED: 'Document limit reached (15 per session).',
+                    DUPLICATE_DOCUMENT: 'This file is already uploaded in this session.',
                 };
-                setUploadError(messages[error.error_code] || error.detail);
+                setUploadError(errorMessages[error.error_code] || error.message);
             } else {
                 console.error('Upload error:', error);
             }
@@ -473,38 +226,35 @@ export default function App() {
     };
 
     const handleProcess = async () => {
-        if (!activeChatId) return;
+        if (!sessionId) return;
 
         processingCancelledRef.current = false;
         setIsProcessing(true);
         setProcessingProgress(null);
 
         try {
-            await processSession(activeChatId, isGuest ? guestSessionId : null);
+            await processSession(sessionId);
 
             let status = 'processing';
             let attempts = 0;
             const maxAttempts = 120;
 
             while (status === 'processing' && attempts < maxAttempts) {
-                if (processingCancelledRef.current) {
-                    throw new Error('Processing cancelled');
-                }
+                if (processingCancelledRef.current) throw new Error('Processing cancelled');
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
-                const statusResult = await checkStatus(activeChatId, isGuest ? guestSessionId : null);
+                const statusResult = await checkStatus(sessionId);
                 status = statusResult.status;
                 if (statusResult.document_progress) {
                     setProcessingProgress(statusResult.document_progress);
                 }
 
                 if (status === 'ready') {
-                    const docsData = await listChatDocuments(activeChatId, isGuest ? guestSessionId : null);
+                    const docsData = await listDocuments(sessionId);
                     const nextFiles = (docsData.documents || []).map(d => ({
                         fileName: d.filename,
                         fileSize: d.file_size,
                         uploadedAt: new Date(d.created_at).getTime(),
-                        chatId: activeChatId,
                         isProcessed: d.status === 'ready',
                         isFailed: d.status === 'failed',
                         isExpired: false,
@@ -513,39 +263,31 @@ export default function App() {
                     setIsProcessed(nextFiles.length > 0 && nextFiles.some(f => f.isProcessed));
                     setProcessingProgress(null);
 
-                    const successMessage = {
+                    setMessages(prev => [...prev, {
                         role: 'system',
                         content: `Successfully processed ${nextFiles.length} file${nextFiles.length !== 1 ? 's' : ''}. You can now ask questions!`,
                         timestamp: Date.now(),
-                        isSuccess: true
-                    };
-                    setMessages(prev => [...prev, successMessage]);
-                    broadcastChatSync('processing-ready', activeChatId);
-                    if (!isGuest) refreshChats();
+                        isSuccess: true,
+                    }]);
                     break;
                 }
 
                 if (status === 'error') {
                     throw new Error(statusResult.error_message || 'Processing failed');
                 }
-
                 attempts++;
             }
 
-            if (attempts >= maxAttempts) {
-                throw new Error('Processing timeout');
-            }
-
+            if (attempts >= maxAttempts) throw new Error('Processing timeout');
         } catch (error) {
             console.error('Processing error:', error);
-            const errorMessage = {
+            setMessages(prev => [...prev, {
                 id: `sys-${Date.now()}-${Math.random().toString(16).slice(2)}`,
                 role: 'system',
                 content: `Processing failed: ${error.message}`,
                 timestamp: Date.now(),
-                isError: true
-            };
-            setMessages(prev => [...prev, errorMessage]);
+                isError: true,
+            }]);
         } finally {
             setIsProcessing(false);
             setProcessingProgress(null);
@@ -553,194 +295,37 @@ export default function App() {
     };
 
     const handleClear = () => {
-        (async () => {
-            processingCancelledRef.current = true;
-            setClearSignal(prev => prev + 1);
-            setPendingFileCount(0);
-            setIsProcessing(false);
-            setProcessingProgress(null);
-            setUploadError(null);
-
-            if (!activeChatId) {
-                setUploadedFiles([]);
-                setIsProcessed(false);
-                return;
-            }
-
-            try {
-                await clearChatFiles(activeChatId, isGuest ? guestSessionId : null);
-                broadcastChatSync('files-cleared', activeChatId);
-            } catch {
-                // ignore clear failures in UI reset flow
-            }
-
-            setUploadedFiles([]);
-            setIsProcessed(false);
-        })();
-    };
-
-    const handleDeleteChat = async (chatId) => {
-        try {
-            await deleteChat(chatId, isGuest ? guestSessionId : null);
-            draftChatIdsRef.current.delete(chatId);
-            broadcastChatSync('chat-deleted', chatId);
-            if (activeChatId === chatId) {
-                setActiveChatId(null);
-                setMessages([]);
-                setUploadedFiles([]);
-                setIsProcessed(false);
-                setPendingFileCount(0);
-                setClearSignal(prev => prev + 1);
-            }
-            refreshChats();
-        } catch { /* ignore */ }
-    };
-
-    const handleSelectChat = async (chat) => {
-        if (activeChatId === chat.id) return;
-        await maybeDeleteUnusedDraftChat();
-        setActiveChatId(chat.id);
+        processingCancelledRef.current = true;
         setClearSignal(prev => prev + 1);
         setPendingFileCount(0);
+        setIsProcessing(false);
         setProcessingProgress(null);
         setUploadError(null);
+        setUploadedFiles([]);
+        setIsProcessed(false);
+        setMessages([]);
+        setChatHistory([]);
+
+        // Delete old session and create fresh one
+        const oldSid = sessionRef.current;
+        if (oldSid) deleteSession(oldSid);
+        (async () => {
+            try {
+                const data = await createSession();
+                setSessionId(data.session_id);
+                sessionRef.current = data.session_id;
+                cleanupSentRef.current = false;
+            } catch (e) {
+                console.error('Failed to create new session:', e);
+            }
+        })();
     };
-
-    const handleNewChat = async () => {
-        if (isGuest) {
-            setActiveChatId(null);
-            setClearSignal(prev => prev + 1);
-            setPendingFileCount(0);
-            setMessages([]);
-            setUploadedFiles([]);
-            setIsProcessed(false);
-            setProcessingProgress(null);
-            setUploadError(null);
-            return;
-        }
-
-        await maybeDeleteUnusedDraftChat();
-
-        try {
-            const created = await createChat('New');
-            draftChatIdsRef.current.add(created.id);
-            setActiveChatId(created.id);
-            setMessages([]);
-            setUploadedFiles([]);
-            setIsProcessed(false);
-            setProcessingProgress(null);
-            setUploadError(null);
-            setClearSignal(prev => prev + 1);
-            setPendingFileCount(0);
-            refreshChats();
-            broadcastChatSync('chat-created', created.id);
-        } catch {
-            // ignore
-        }
-    };
-
-    const handleContinueAsGuest = () => {
-        setShowAuthModal(false);
-    };
-
-    if (supabase && showAuthModal && !user) {
-        return (
-            <div className="relative flex h-screen items-center justify-center overflow-hidden text-[#f5efff]">
-                <div className="glass-panel w-full max-w-md m-3 p-6 rounded-3xl relative">
-                    <button
-                        onClick={handleContinueAsGuest}
-                        className="absolute top-4 right-4 text-white/60 hover:text-white transition-colors"
-                        aria-label="Close"
-                    >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                    <h1 className="text-white font-semibold text-xl mb-4">Sign in to IntelliDocs</h1>
-                    <div className="space-y-3">
-                        <button
-                            onClick={handleGoogleSignIn}
-                            disabled={authLoading}
-                            className="w-full rounded-xl border border-blue-400 bg-white text-black px-4 py-3 text-base font-medium hover:bg-gray-100 transition-colors"
-                        >
-                            Continue with Google
-                        </button>
-
-                        <div className="flex items-center gap-3 py-1">
-                            <div className="h-px flex-1 bg-white/20" />
-                            <span className="text-xs uppercase tracking-wide text-white/70">or</span>
-                            <div className="h-px flex-1 bg-white/20" />
-                        </div>
-
-                        {!showEmailAuth ? (
-                            <>
-                                <button
-                                    onClick={() => setShowEmailAuth(true)}
-                                    className="w-full rounded-xl bg-indigo-500 px-4 py-3 text-base font-medium text-white hover:bg-indigo-400 transition-colors"
-                                >
-                                    Continue with Email
-                                </button>
-                                <button
-                                    onClick={handleContinueAsGuest}
-                                    className="w-full rounded-xl border border-white/20 px-4 py-3 text-base font-medium text-white/80 hover:bg-white/10 transition-colors"
-                                >
-                                    Continue as Guest
-                                </button>
-                            </>
-                        ) : (
-                            <>
-                                <input
-                                    type="email"
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                    placeholder="Email"
-                                    className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
-                                />
-                                <input
-                                    type="password"
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    placeholder="Password"
-                                    className="w-full rounded-xl bg-white/10 border border-white/20 px-3 py-2 text-white"
-                                />
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={handleSignIn}
-                                        disabled={authLoading}
-                                        className="flex-1 rounded-xl bg-white/20 px-3 py-2 text-sm text-white hover:bg-white/30"
-                                    >
-                                        Sign In
-                                    </button>
-                                    <button
-                                        onClick={handleSignUp}
-                                        disabled={authLoading}
-                                        className="flex-1 rounded-xl bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20"
-                                    >
-                                        Sign Up
-                                    </button>
-                                </div>
-                                <button
-                                    onClick={() => setShowEmailAuth(false)}
-                                    className="w-full rounded-xl border border-white/20 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition-colors"
-                                >
-                                    Back
-                                </button>
-                            </>
-                        )}
-                        {authError && <p className="text-red-300 text-xs">{authError}</p>}
-                    </div>
-                </div>
-            </div>
-        );
-    }
 
     const orderedMessages = [...messages].sort((a, b) => {
         const ta = a.timestamp || 0;
         const tb = b.timestamp || 0;
         if (ta !== tb) return ta - tb;
-        const ia = String(a.id || '');
-        const ib = String(b.id || '');
-        return ia.localeCompare(ib);
+        return String(a.id || '').localeCompare(String(b.id || ''));
     });
 
     return (
@@ -748,6 +333,7 @@ export default function App() {
             <div className="pointer-events-none absolute -top-24 -left-16 h-72 w-72 rounded-full bg-fuchsia-400/20 blur-3xl" />
             <div className="pointer-events-none absolute top-10 -right-20 h-96 w-96 rounded-full bg-violet-400/20 blur-3xl" />
 
+            {/* Sidebar */}
             <div className="glass-panel hidden md:flex flex-col w-64 lg:w-80 m-3 p-4 lg:p-6 overflow-y-auto flex-shrink-0 text-[#d8cbe9] transition-all duration-300 rounded-3xl">
                 <div className="flex items-center gap-2 mb-6">
                     <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-fuchsia-400 to-violet-600 flex items-center justify-center shadow-lg shadow-violet-900/50">
@@ -758,63 +344,9 @@ export default function App() {
                     <h1 className="text-white font-semibold text-sm sm:text-base">IntelliDocs</h1>
                 </div>
 
-                {/* Tab toggle: Info / History */}
-                {!isGuest && (
-                    <div className="flex gap-1 mb-4 rounded-xl bg-white/5 p-1">
-                        <button
-                            onClick={() => setShowHistory(false)}
-                            className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${!showHistory ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white/80'}`}
-                        >
-                            About
-                        </button>
-                        <button
-                            onClick={() => setShowHistory(true)}
-                            className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${showHistory ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white/80'}`}
-                        >
-                            History
-                        </button>
-                    </div>
-                )}
-
-                {showHistory && !isGuest ? (
-                    <div className="flex flex-col flex-1 overflow-hidden">
-                        <button
-                            onClick={handleNewChat}
-                            className="w-full mb-3 rounded-xl border border-white/20 px-3 py-2 text-sm text-white hover:bg-white/10 transition-colors flex items-center gap-2 justify-center"
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                            </svg>
-                            New Chat
-                        </button>
-                        <div className="flex-1 overflow-y-auto space-y-1">
-                            {chatList.length === 0 ? (
-                                <p className="text-xs text-white/40 text-center mt-4">No chats yet</p>
-                            ) : chatList.map(chat => (
-                                <div
-                                    key={chat.id}
-                                    onClick={() => handleSelectChat(chat)}
-                                    className={`group flex items-center justify-between rounded-xl px-3 py-2 cursor-pointer transition-colors ${activeChatId === chat.id ? 'bg-white/15 text-white' : 'text-white/70 hover:bg-white/8 hover:text-white'}`}
-                                >
-                                    <span className="truncate text-sm">{chat.title || 'Untitled'}</span>
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}
-                                        className="opacity-0 group-hover:opacity-100 text-white/40 hover:text-red-300 transition-all ml-2 flex-shrink-0"
-                                        title="Delete chat"
-                                    >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                        </svg>
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                ) : (
-                    <>
-                        <h2 className="text-white text-base lg:text-lg font-semibold mb-3">About IntelliDocs</h2>
+                <h2 className="text-white text-base lg:text-lg font-semibold mb-3">About</h2>
                 <p className="text-xs lg:text-sm leading-relaxed mb-6 text-[#d8cbe9]">
-                    This RAG-powered AI assistant enables organizations to instantly unlock insights from their internal knowledge base. It intelligently processes diverse data sources and delivers precise, context-aware answers in real time. Built for seamless integration into existing applications and workflows, the system supports both long-form analytical queries and quick factual lookups, helping teams research faster and make better-informed decisions.
+                    This RAG-powered AI assistant enables organizations to instantly unlock insights from their internal knowledge base. It intelligently processes diverse data sources and delivers precise, context-aware answers in real time.
                 </p>
 
                 <h3 className="text-white font-medium mb-3 text-sm lg:text-base">Supported Documents:</h3>
@@ -826,10 +358,9 @@ export default function App() {
                     <li>Product documentation</li>
                     <li>Website content</li>
                 </ul>
-                    </>
-                )}
             </div>
 
+            {/* Main area */}
             <div className="flex flex-col flex-1 overflow-hidden relative z-10">
                 <div className="flex justify-between md:justify-end items-center p-4 flex-shrink-0 z-10">
                     <div className="flex items-center gap-2 md:hidden">
@@ -842,7 +373,6 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                        {/* Report Bug dropdown */}
                         <div className="relative" ref={bugReportRef}>
                             <button
                                 onClick={() => setShowBugReport(prev => !prev)}
@@ -873,26 +403,10 @@ export default function App() {
                         <button
                             onClick={handleClear}
                             className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
-                            disabled={!activeChatId && uploadedFiles.length === 0 && pendingFileCount === 0 && !isProcessing}
+                            disabled={uploadedFiles.length === 0 && pendingFileCount === 0 && !isProcessing && messages.length === 0}
                         >
                             Clear
                         </button>
-                        {supabase && user && (
-                            <button
-                                onClick={handleSignOut}
-                                className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
-                            >
-                                Sign out
-                            </button>
-                        )}
-                        {supabase && isGuest && (
-                            <button
-                                onClick={() => setShowAuthModal(true)}
-                                className="glass-card inline-flex h-8 items-center justify-center rounded-full px-3 text-white text-xs sm:text-sm leading-none transition-colors hover:bg-white/20"
-                            >
-                                Sign in
-                            </button>
-                        )}
                     </div>
                 </div>
 
@@ -946,7 +460,6 @@ export default function App() {
                                     </div>
                                 </div>
                             </div>
-
                         </div>
                     ) : (
                         <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6">
@@ -959,7 +472,7 @@ export default function App() {
                                         role: 'assistant',
                                         content: '',
                                         timestamp: Date.now(),
-                                        isTyping: true
+                                        isTyping: true,
                                     }}
                                 />
                             )}
@@ -1001,7 +514,7 @@ export default function App() {
                             </span>
                             <span className="text-white/70 flex items-center gap-1">
                                 <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                Sessions and documents automatically expire after 30 minutes of inactivity
+                                Sessions expire after 30 minutes of inactivity
                             </span>
                         </div>
                     </div>

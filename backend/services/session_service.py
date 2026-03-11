@@ -48,7 +48,7 @@ class SessionManager:
         self._lock = threading.Lock()
         self._storage = create_session_storage(self.BASE_STORAGE_DIR)
     
-    def create_session(self, filename: str, file_size: int, db: DBSession, user_id: Optional[str] = None) -> str:
+    def create_session(self, filename: str, file_size: int, db: DBSession) -> str:
         """Create a new isolated session with its own document storage."""
         session_id = str(uuid.uuid4())
         
@@ -62,7 +62,6 @@ class SessionManager:
         # Create database record
         session = Session(
             session_id=session_id,
-            user_id=user_id,
             filename=filename,
             file_size=file_size,
             status="processing",
@@ -75,12 +74,9 @@ class SessionManager:
         logger.info(f"Created session {session_id} for file {filename}")
         return session_id
     
-    def get_session(self, session_id: str, db: DBSession, user_id: Optional[str] = None) -> Optional[Session]:
+    def get_session(self, session_id: str, db: DBSession) -> Optional[Session]:
         """Retrieve session from database."""
-        query = db.query(Session).filter(Session.session_id == session_id)
-        if user_id is not None:
-            query = query.filter(Session.user_id == user_id)
-        session = query.first()
+        session = db.query(Session).filter(Session.session_id == session_id).first()
         if session:
             # Update last accessed time
             session.last_accessed = datetime.utcnow()

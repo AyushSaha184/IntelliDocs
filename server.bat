@@ -9,6 +9,13 @@ echo     IntelliDocs (RAG Assistant) Local Startup
 echo ===================================================
 echo.
 
+:: 0. Stop stale backend Python processes (prevents old route sets)
+echo [0/3] Stopping stale backend processes...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$procs = Get-CimInstance Win32_Process ^| Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -match 'uvicorn\\s+backend\.main:app' };" ^
+    "if ($procs) { $procs ^| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Write-Output ('Stopped ' + $procs.Count + ' stale backend process(es).') } else { Write-Output 'No stale backend processes found.' }"
+echo.
+
 :: 1. Start PostgreSQL if needed
 echo [1/3] Checking PostgreSQL service...
 sc query "postgresql-x64-18" | find "RUNNING" >nul 2>&1

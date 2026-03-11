@@ -123,19 +123,6 @@ else:
 if VECTOR_BACKEND == "qdrant" and not QDRANT_URL:
     VECTOR_BACKEND = "faiss"
 
-# Supabase auth/storage configuration
-SUPABASE_URL = _env("SUPABASE_URL", "")
-SUPABASE_ANON_KEY = _env("SUPABASE_ANON_KEY", "")
-SUPABASE_SERVICE_ROLE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY", "")
-SUPABASE_STORAGE_BUCKET = _env("SUPABASE_STORAGE_BUCKET", "rag-documents")
-
-# API auth behavior
-_raw_auth_required = _env("AUTH_REQUIRED", "auto").lower()  # "auto" | "true" | "false"
-if _raw_auth_required == "auto":
-    AUTH_REQUIRED = bool(SUPABASE_URL and (SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY))
-else:
-    AUTH_REQUIRED = _raw_auth_required == "true"
-
 # CORS configuration
 CORS_ALLOWED_ORIGINS = [
     origin.strip()

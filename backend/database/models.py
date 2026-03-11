@@ -7,14 +7,12 @@ from sqlalchemy import (
     DateTime,
     Integer,
     Text,
-    Boolean,
-    ForeignKey,
     Index,
     text,
     create_engine,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.orm import sessionmaker
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -27,12 +25,11 @@ Base = declarative_base()
 
 
 class Session(Base):
-    """User session model for RAG document processing."""
+    """Anonymous session model for RAG document processing."""
 
     __tablename__ = "sessions"
 
     session_id = Column(String(36), primary_key=True, index=True)
-    user_id = Column(String(64), nullable=True, index=True)
     filename = Column(String(255), nullable=False)
     file_size = Column(Integer, nullable=False)
     status = Column(String(50), default="processing")  # processing, ready, error
@@ -45,94 +42,20 @@ class Session(Base):
         return f"<Session(session_id={self.session_id}, status={self.status})>"
 
 
-class Chat(Base):
-    __tablename__ = "chats"
-
-    id = Column(String(36), primary_key=True)
-    user_id = Column(String(64), nullable=True, index=True)
-    session_id = Column(String(36), nullable=True, index=True)
-    title = Column(String(500), nullable=False, default="New Chat")
-    is_guest = Column(Boolean, default=False, nullable=False)
-    status = Column(String(20), default="active", nullable=False)  # active|deleting|deleted
-    version = Column(Integer, default=1, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-    messages = relationship("ChatMessage", back_populates="chat", cascade="all, delete-orphan")
-    documents = relationship("Document", back_populates="chat", cascade="all, delete-orphan")
-
-    __table_args__ = (
-        Index("ix_chats_user_updated", "user_id", "updated_at"),
-    )
-
-    def __repr__(self):
-        return f"<Chat(id={self.id}, title={self.title}, status={self.status})>"
-
-
-class ChatMessage(Base):
-    __tablename__ = "chat_messages"
-
-    id = Column(String(36), primary_key=True)
-    chat_id = Column(String(36), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
-    role = Column(String(20), nullable=False)  # user|assistant|system
-    content = Column(Text, nullable=False)
-    metadata_json = Column(Text, default="{}")  # JSON string
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    chat = relationship("Chat", back_populates="messages")
-
-    __table_args__ = (
-        Index("ix_chat_messages_chat_created", "chat_id", "created_at"),
-    )
-
-    def __repr__(self):
-        return f"<ChatMessage(id={self.id}, role={self.role})>"
-
-
 class Document(Base):
     __tablename__ = "documents"
 
     id = Column(String(36), primary_key=True)
-    chat_id = Column(String(36), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(String(64), nullable=True)
-    session_id = Column(String(36), nullable=True)
+    session_id = Column(String(36), nullable=False, index=True)
     filename = Column(String(500), nullable=False)
     file_size = Column(Integer, default=0)
-    is_guest = Column(Boolean, default=False, nullable=False)
     content_hash = Column(String(64), nullable=True)
-    status = Column(String(20), default="pending", nullable=False)  # pending|ready|failed|deleting|deleted
+    status = Column(String(20), default="pending", nullable=False)  # pending|ready|failed
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-    chat = relationship("Chat", back_populates="documents")
-
-    __table_args__ = (
-        Index("ix_documents_chat_id", "chat_id"),
-        Index("ix_documents_user_id", "user_id"),
-        Index("ix_documents_user_hash", "user_id", "content_hash"),
-    )
 
     def __repr__(self):
         return f"<Document(id={self.id}, filename={self.filename}, status={self.status})>"
-
-
-class CleanupJob(Base):
-    """Tracks retryable cleanup tasks for cascading deletes."""
-
-    __tablename__ = "cleanup_jobs"
-
-    id = Column(String(36), primary_key=True)
-    job_type = Column(String(50), nullable=False)  # chat_delete|guest_cleanup|orphan_sweep
-    target_id = Column(String(36), nullable=False)  # chat_id or session_id
-    status = Column(String(20), default="pending", nullable=False)  # pending|running|completed|failed
-    attempts = Column(Integer, default=0, nullable=False)
-    max_attempts = Column(Integer, default=5, nullable=False)
-    error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-    def __repr__(self):
-        return f"<CleanupJob(id={self.id}, type={self.job_type}, status={self.status})>"
 
 
 # Database setup - PostgreSQL (lazy initialization)
@@ -189,23 +112,36 @@ def get_session_local():
 def init_db():
     """Initialize database tables."""
     engine = get_engine()
+    _migrate_schema(engine)
     Base.metadata.create_all(bind=engine)
-    _drop_document_dedupe_indexes(engine)
 
 
-def _drop_document_dedupe_indexes(engine):
-    """Remove legacy dedupe indexes so same document can be uploaded multiple times."""
-    statements = [
-        "DROP INDEX IF EXISTS uq_documents_active_user_hash",
-        "DROP INDEX IF EXISTS uq_documents_active_session_hash",
-    ]
-
+def _migrate_schema(engine):
+    """Rename legacy tables that conflict with the new simplified schema."""
     with engine.begin() as conn:
-        for stmt in statements:
+        # Rename old tables so create_all builds fresh ones
+        for old_table in ("chats", "chat_messages", "cleanup_jobs"):
             try:
-                conn.execute(text(stmt))
+                result = conn.execute(text(
+                    f"SELECT 1 FROM information_schema.tables WHERE table_name='{old_table}'"
+                ))
+                if result.fetchone():
+                    conn.execute(text(f"ALTER TABLE {old_table} RENAME TO {old_table}_legacy"))
+                    print(f"[DB] Migration: renamed {old_table} → {old_table}_legacy")
             except Exception as exc:
-                print(f"[DB] Warning: could not drop dedupe index: {exc}")
+                print(f"[DB] Migration warning ({old_table}): {exc}")
+
+        # Rename documents table if it has legacy columns (chat_id, user_id)
+        try:
+            result = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='documents' AND column_name='chat_id'"
+            ))
+            if result.fetchone():
+                conn.execute(text("ALTER TABLE documents RENAME TO documents_legacy_v2"))
+                print("[DB] Migration: renamed old documents table → documents_legacy_v2")
+        except Exception as exc:
+            print(f"[DB] Migration warning (documents): {exc}")
 
 
 def get_db():

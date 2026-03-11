@@ -697,6 +697,11 @@ class AgentOrchestrator:
                 user=POSTGRES_USER, password=POSTGRES_PASSWORD, connect_timeout=5,
             )
             with conn.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('public.approved_answers')")
+                exists_row = cursor.fetchone()
+                if not exists_row or not exists_row[0]:
+                    conn.close()
+                    return None
                 # Freshness guard: only serve if approved within the same session
                 # (session_id acts as a proxy for the current document set / index version)
                 cursor.execute(
