@@ -185,13 +185,12 @@ class TextChunker:
         self._db_conn: Optional[psycopg2.extensions.connection] = None
         self._db_lock = threading.Lock()
         
-        # Token count cache (hash -> count) with OrderedDict for efficient FIFO
-        # Increased from 10K to 50K for better hit rates on large corpora
+        # In-memory token-count cache for hot-path chunking performance.
         self._token_cache: OrderedDict[str, int] = OrderedDict()
-        self._max_cache_size = 50000  # Configurable cache size
+        self._max_cache_size = 50000
         self._cache_hits = 0
         self._cache_misses = 0
-        self._cache_lock = threading.Lock()  # Thread-safe cache writes
+        self._cache_lock = threading.Lock()
         
         Path(self.chunks_dir).mkdir(parents=True, exist_ok=True)
         
@@ -267,10 +266,14 @@ class TextChunker:
         # Use hash of text as cache key to save memory
         text_hash = hashlib.md5(text.encode('utf-8', errors='ignore')).hexdigest()
         
-        # Check cache
-        if text_hash in self._token_cache:
-            self._cache_hits += 1
-            return self._token_cache[text_hash]
+        # Check in-memory cache
+        with self._cache_lock:
+            cached = self._token_cache.get(text_hash)
+            if cached is not None:
+                self._cache_hits += 1
+                # Promote entry for LRU behavior
+                self._token_cache.move_to_end(text_hash)
+                return int(cached)
         
         self._cache_misses += 1
         
@@ -284,11 +287,12 @@ class TextChunker:
             # Ultra-fast fallback: ~4 chars per token
             count = max(1, text_len // 4)
         
-        # Cache with configurable size limit (FIFO with OrderedDict) - lock only the mutation
+        # Cache locally with LRU eviction.
         with self._cache_lock:
-            if len(self._token_cache) >= self._max_cache_size:
+            self._token_cache[text_hash] = int(count)
+            self._token_cache.move_to_end(text_hash)
+            if len(self._token_cache) > self._max_cache_size:
                 self._token_cache.popitem(last=False)
-            self._token_cache[text_hash] = count
         return count
     
     def get_token_count(self, text: str) -> int:
@@ -1740,7 +1744,6 @@ class TextChunker:
         
         # Pre-filter empty documents
         valid_docs = [doc for doc in documents if doc and doc.content and len(doc.content) > 0]
-        
         if not valid_docs:
             return all_chunks
         

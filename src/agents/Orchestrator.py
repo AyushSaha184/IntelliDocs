@@ -29,6 +29,7 @@ from src.agents.RetrieverAgent import RetrieverAgent
 from src.agents.SynthesizerAgent import SynthesizerAgent
 from src.agents.ValidatorAgent import ValidatorAgent
 from src.modules.QueryGeneration import QueryResult
+from backend.cache.AuxiliaryCaches import get_cached_approved_answer, set_cached_approved_answer
 from src.modules.QueryCache import get_retrieval_cache, get_llm_cache
 from src.utils.llm_provider import get_shared_llm
 from src.utils.Logger import get_logger
@@ -716,8 +717,16 @@ class AgentOrchestrator:
             conn.close()
 
             if row:
+                # Refresh read-through cache from source-of-truth DB.
+                set_cached_approved_answer(session_id, query, row[0])
                 logger.info(f"[orchestrator] Serving human-approved answer for: '{query[:60]}'")
                 return row[0]
         except Exception as e:
             logger.debug(f"[orchestrator] Approved answer lookup failed (non-critical): {e}")
+            cached = get_cached_approved_answer(session_id, query)
+            if cached:
+                logger.info(
+                    f"[orchestrator] DB unavailable; serving Redis-cached approved answer for: '{query[:60]}'"
+                )
+                return cached
         return None

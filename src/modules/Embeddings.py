@@ -6,7 +6,6 @@ Optimized for batch processing, caching, and handling millions of embeddings.
 """
 
 import os
-import sqlite3
 import threading
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
@@ -15,6 +14,7 @@ import numpy as np
 import hashlib
 import time
 from typing import Callable, TypeVar
+from backend.cache.RedisCache import RedisJSONStore, encode_embedding_payload, decode_embedding_payload
 
 try:
     import openai
@@ -267,94 +267,64 @@ class NVIDIAEmbedding(EmbeddingModel):
         return self._model_name
 
 
-class _EmbeddingDiskCache:
-    """SQLite-backed persistent embedding cache.
+class _EmbeddingRedisCache:
+    """Redis-backed embedding cache.
 
-    Stores {text_hash -> embedding_vector} on disk so embeddings survive
-    process restarts. Avoids re-embedding identical text across rebuilds.
-
-    Schema:
-        cache_key  TEXT PRIMARY KEY  -- SHA-256 hash of (model_name + text)
-        embedding  BLOB              -- numpy array serialized as bytes
-        dimension  INTEGER           -- embedding dimension for validation
-        created_at TEXT              -- ISO timestamp
+    Embeddings are stored as base64-encoded float32 bytes with explicit dtype
+    and shape metadata to keep payloads compact and deterministic.
     """
 
-    def __init__(self, cache_dir: str, model_name: str):
-        os.makedirs(cache_dir, exist_ok=True)
-        db_path = os.path.join(cache_dir, "embedding_cache.db")
+    def __init__(self, model_name: str, ttl_seconds: Optional[int] = None):
         self._model_name = model_name
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._lock = threading.Lock()
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS embeddings (
-                cache_key  TEXT PRIMARY KEY,
-                embedding  BLOB NOT NULL,
-                dimension  INTEGER NOT NULL,
-                model_name TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        self._conn.commit()
-        logger.info(f"Disk embedding cache opened at {db_path}")
+        self._store = RedisJSONStore(
+            namespace="embedding",
+            ttl_seconds=ttl_seconds
+            if ttl_seconds is not None
+            else int(os.getenv("REDIS_EMBEDDING_TTL_SECONDS", os.getenv("REDIS_DEFAULT_TTL_SECONDS", "604800"))),
+        )
 
-    def load_all(self) -> Dict[str, np.ndarray]:
-        """Load all cached embeddings for the current model into memory."""
-        cache: Dict[str, np.ndarray] = {}
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT cache_key, embedding, dimension FROM embeddings WHERE model_name = ?",
-                (self._model_name,)
-            )
-            for key, blob, dim in cursor:
-                vec = np.frombuffer(blob, dtype=np.float32).copy()
-                if len(vec) == dim:
-                    cache[key] = vec
-        logger.info(f"Loaded {len(cache)} cached embeddings from disk")
-        return cache
+    def get(self, cache_key: str) -> Optional[np.ndarray]:
+        record = self._store.get_json(cache_key)
+        if not record:
+            return None
 
-    def put_batch(self, items: List[tuple]):
-        """Persist multiple (cache_key, embedding) pairs in one transaction."""
+        if record.get("model_name") != self._model_name:
+            return None
+
+        payload = record.get("embedding")
+        if not isinstance(payload, dict):
+            return None
+
+        return decode_embedding_payload(payload)
+
+    def put_batch(self, items: List[tuple]) -> None:
         if not items:
             return
-        with self._lock:
-            self._conn.executemany(
-                "INSERT OR IGNORE INTO embeddings "
-                "(cache_key, embedding, dimension, model_name) VALUES (?, ?, ?, ?)",
-                [
-                    (key, emb.astype(np.float32).tobytes(), len(emb), self._model_name)
-                    for key, emb in items
-                ]
-            )
-            self._conn.commit()
+
+        for cache_key, emb in items:
+            record = {
+                "model_name": self._model_name,
+                "embedding": encode_embedding_payload(emb),
+                "dimension": int(len(emb)),
+                "created_at": time.time(),
+            }
+            self._store.set_json(cache_key, record)
 
     def count(self) -> int:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE model_name = ?",
-                (self._model_name,)
-            ).fetchone()
-            return row[0] if row else 0
+        return -1
 
     def db_size_mb(self) -> float:
-        with self._lock:
-            page_count = self._conn.execute("PRAGMA page_count").fetchone()[0]
-            page_size  = self._conn.execute("PRAGMA page_size").fetchone()[0]
-            return (page_count * page_size) / (1024 * 1024)
+        return 0.0
 
-    def close(self):
-        with self._lock:
-            self._conn.close()
+    def close(self) -> None:
+        return None
 
 
 class EmbeddingService:
     """Service for generating and caching NVIDIA BGE-M3 embeddings.
 
     Features:
-    - In-memory cache for fast repeated lookups
-    - SQLite disk cache for persistence across restarts
+    - Redis-backed persistent cache
     - Deduplication: identical texts embedded only once per batch
     """
 
@@ -368,24 +338,24 @@ class EmbeddingService:
         self.model = model
         self.use_cache = use_cache
         self.max_cache_size = max_cache_size
-        self._embedding_cache: Dict[str, np.ndarray] = {}
         self._cache_lock = threading.Lock()
         self._cache_hits = 0
         self._cache_misses = 0
-        self._disk_cache: Optional[_EmbeddingDiskCache] = None
+        self._redis_cache: Optional[_EmbeddingRedisCache] = None
 
-        if use_cache and cache_dir:
+        if use_cache:
             try:
-                self._disk_cache = _EmbeddingDiskCache(cache_dir, model.model_name)
-                self._embedding_cache = self._disk_cache.load_all()
+                if cache_dir:
+                    logger.debug("Embedding cache_dir ignored in Redis mode")
+                self._redis_cache = _EmbeddingRedisCache(model.model_name)
                 logger.info(
                     f"EmbeddingService ready: {model.model_name}, "
-                    f"disk cache preloaded {len(self._embedding_cache)} entries"
+                    "Redis cache enabled"
                 )
             except Exception as e:
-                logger.warning(f"Disk cache init failed, using memory-only: {e}")
+                logger.warning(f"Redis cache init failed, continuing with cache misses: {e}")
         else:
-            logger.info(f"EmbeddingService ready: {model.model_name} (memory cache only)")
+            logger.info(f"EmbeddingService ready: {model.model_name} (cache disabled)")
 
     def _cache_key(self, text: str) -> str:
         content = f"{self.model.model_name}:{text}"
@@ -395,26 +365,26 @@ class EmbeddingService:
         """Embed a single text with caching"""
         cache_key = self._cache_key(text) if self.use_cache else None
 
-        with self._cache_lock:
-            if cache_key and cache_key in self._embedding_cache:
-                self._cache_hits += 1
+        if self.use_cache and cache_key and self._redis_cache:
+            cached = self._redis_cache.get(cache_key)
+            if cached is not None:
+                with self._cache_lock:
+                    self._cache_hits += 1
                 return EmbeddingResult(
                     text=text,
-                    embedding=self._embedding_cache[cache_key],
+                    embedding=cached,
                     dimension=self.model.dimension,
-                    model_name=self.model.model_name
+                    model_name=self.model.model_name,
                 )
-            if self.use_cache:
+
+        if self.use_cache:
+            with self._cache_lock:
                 self._cache_misses += 1
 
         embedding = self.model.embed(text)
 
-        if self.use_cache and embedding is not None:
-            with self._cache_lock:
-                if len(self._embedding_cache) < self.max_cache_size:
-                    self._embedding_cache[cache_key] = embedding
-            if self._disk_cache:
-                self._disk_cache.put_batch([(cache_key, embedding)])
+        if self.use_cache and embedding is not None and cache_key and self._redis_cache:
+            self._redis_cache.put_batch([(cache_key, embedding)])
 
         return EmbeddingResult(
             text=text,
@@ -428,7 +398,7 @@ class EmbeddingService:
 
         - Cache-hit texts never reach the API
         - Duplicate texts within the batch are embedded once
-        - New embeddings persisted to disk in a single transaction
+        - New embeddings persisted to Redis
         """
         if not texts:
             return []
@@ -440,20 +410,27 @@ class EmbeddingService:
         uncached_unique: Dict[str, int] = {}
         text_to_key:    Dict[str, str]  = {}
 
-        with self._cache_lock:
-            for idx, text in enumerate(texts):
-                if not text or not text.strip():
-                    continue
-                if self.use_cache:
-                    ck = self._cache_key(text)
-                    text_to_key[text] = ck
-                    if ck in self._embedding_cache:
-                        embeddings[idx] = self._embedding_cache[ck]
-                        self._cache_hits += 1
-                        continue
+        for idx, text in enumerate(texts):
+            if not text or not text.strip():
+                continue
+            ck = self._cache_key(text)
+            text_to_key[text] = ck
+
+            cached = None
+            if self.use_cache and self._redis_cache:
+                cached = self._redis_cache.get(ck)
+
+            if cached is not None:
+                embeddings[idx] = cached
+                with self._cache_lock:
+                    self._cache_hits += 1
+                continue
+
+            if self.use_cache:
+                with self._cache_lock:
                     self._cache_misses += 1
-                if text not in uncached_unique:
-                    uncached_unique[text] = idx
+            if text not in uncached_unique:
+                uncached_unique[text] = idx
 
         new_entries: List[tuple] = []
         text_to_emb: Dict[str, np.ndarray] = {}
@@ -471,15 +448,12 @@ class EmbeddingService:
                 text_to_emb[text] = emb
                 if self.use_cache and emb is not None:
                     ck = text_to_key.get(text, self._cache_key(text))
-                    with self._cache_lock:
-                        if len(self._embedding_cache) < self.max_cache_size:
-                            self._embedding_cache[ck] = emb
                     new_entries.append((ck, emb))
         else:
             logger.info(f"All {len(texts)} texts served from cache (100% hit rate)")
 
-        if new_entries and self._disk_cache:
-            self._disk_cache.put_batch(new_entries)
+        if new_entries and self._redis_cache:
+            self._redis_cache.put_batch(new_entries)
 
         results = []
         for idx, text in enumerate(texts):
@@ -501,13 +475,13 @@ class EmbeddingService:
             "cache_hits":           self._cache_hits,
             "cache_misses":         self._cache_misses,
             "cache_hit_ratio":      self._cache_hits / total if total > 0 else 0,
-            "memory_cache_entries": len(self._embedding_cache),
+            "memory_cache_entries": 0,
             "cache_enabled":        self.use_cache,
-            "disk_cache_enabled":   self._disk_cache is not None,
+            "disk_cache_enabled":   False,
+            "redis_cache_enabled":  self._redis_cache is not None,
         }
-        if self._disk_cache:
-            stats["disk_cache_entries"] = self._disk_cache.count()
-            stats["disk_cache_size_mb"] = round(self._disk_cache.db_size_mb(), 2)
+        if self._redis_cache:
+            stats["redis_cache_entries"] = self._redis_cache.count()
         return stats
 
 
@@ -529,9 +503,9 @@ def create_embedding_service(
 
     Args:
         api_key: NVIDIA API key (falls back to NVIDIA_API_KEY env var)
-        use_cache: Enable in-memory + disk embedding cache
-        max_cache_size: Maximum in-memory cache entries
-        cache_dir: Directory for persistent SQLite cache (default: data/cache/)
+        use_cache: Enable Redis embedding cache
+        max_cache_size: Kept for backward compatibility; unused in Redis mode
+        cache_dir: Kept for backward compatibility; ignored in Redis mode
         **kwargs: Extra args forwarded to NVIDIAEmbedding
                   (e.g. normalize_embeddings=False, timeout=60.0)
 

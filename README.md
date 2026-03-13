@@ -124,8 +124,8 @@ Specialized for:
 | Level | What's Cached | Strategy |
 |---|---|---|
 | **KV Cache** | Prompt Prefix (System+Context) | Provider-side (OpenRouter) ephemeral KV storage |
-| **Retrieval Cache** | Retrieved chunk sets | SQLite: session + normalized query + top_k |
-| **LLM Cache** | Final LLM responses | SQLite: session + query hash |
+| **Retrieval Cache** | Retrieved chunk sets | Redis: session + normalized query + top_k |
+| **LLM Cache** | Final LLM responses | Redis: session + query hash |
 | **Human-Approved** | Corrected answers | SQLite: exact query match (High Confidence) |
 
 - All caches are **session-scoped** — no cross-user pollution.
@@ -386,7 +386,12 @@ EMBEDDING_MODEL=baai/bge-m3
 EMBEDDING_NORMALIZE=true
 EMBEDDING_TIMEOUT=120.0
 EMBEDDING_MAX_RETRIES=3
-EMBEDDING_CACHE_DIR=data/cache       # SQLite embedding cache location
+REDIS_URL=redis://localhost:6379/0
+REDIS_PREFIX=rag
+REDIS_DEFAULT_TTL_SECONDS=1800
+REDIS_RETRIEVAL_TTL_SECONDS=1800
+REDIS_LLM_TTL_SECONDS=1800
+REDIS_EMBEDDING_TTL_SECONDS=604800
 
 # ── Retrieval ──────────────────────────────────────────────────────────
 RETRIEVAL_MODE=hybrid                # hybrid | dense
@@ -467,7 +472,7 @@ Deploy via `render.yaml` (blueprint auto-configures DB, env vars, and disk):
 
 - Uses `requirements-render.txt` (no PyTorch — fits Render free-tier RAM).
 - `EMBEDDING_PROVIDER=nvidia` — no local model required.
-- Persistent disk mounted at `/app/data` (7 GB) — preserves vector store, BM25 index, and SQLite caches across restarts.
+- Persistent disk mounted at `/app/data` (7 GB) — preserves vector store and BM25 index across restarts.
 - Set `ENABLE_CHUNK_ENRICHMENT=1` to enable background metadata enrichment (uses additional LLM tokens).
 
 ## How IntelliDocs Works

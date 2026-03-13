@@ -17,6 +17,7 @@ from typing import Optional, List
 from datetime import datetime
 import psycopg2
 from src.agents.BaseAgent import AgentResult
+from backend.cache.AuxiliaryCaches import set_cached_approved_answer
 from src.utils.Logger import get_logger
 from config.config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
 
@@ -256,6 +257,9 @@ class ReviewManager:
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (query, session_id) DO UPDATE SET answer = EXCLUDED.answer
                 """, (query, session_id, corrected_answer, review_id, datetime.utcnow().isoformat()))
+
+                # Cache corrected answer in Redis for fast replay.
+                set_cached_approved_answer(session_id, query, corrected_answer)
 
                 # Log correction
                 cursor.execute("""

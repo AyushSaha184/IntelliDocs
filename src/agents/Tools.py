@@ -17,6 +17,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Optional, List, Dict, Callable
 import psycopg2
+from backend.cache.AuxiliaryCaches import get_cached_document_summary, set_cached_document_summary
 from src.utils.Logger import get_logger
 from src.utils.llm_provider import get_shared_llm
 from config.config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
@@ -251,8 +252,8 @@ def calculate(expression: str) -> ToolResult:
 def summarize_document(doc_id: str) -> ToolResult:
     """Return cached or LLM-generated document summary.
 
-    Checks the document_summaries table first. On miss,
-    retrieves chunk texts and generates a summary via LLM.
+    Checks Redis first. On miss, retrieves chunk texts and
+    generates a summary via LLM.
 
     Args:
         doc_id: Document identifier.
@@ -261,7 +262,12 @@ def summarize_document(doc_id: str) -> ToolResult:
         ToolResult with summary text.
     """
     try:
-        # 1. Check cache in PostgreSQL
+        # 1. Check Redis cache
+        cached = get_cached_document_summary(doc_id)
+        if cached:
+            return ToolResult(output=cached, success=True, tool_name="summarize_document")
+
+        # 2. Load chunk texts from PostgreSQL
         conn = psycopg2.connect(
             host=POSTGRES_HOST, port=POSTGRES_PORT,
             database=POSTGRES_DB, user=POSTGRES_USER,
@@ -269,17 +275,6 @@ def summarize_document(doc_id: str) -> ToolResult:
         )
 
         with conn.cursor() as cursor:
-            # Try cached summary first
-            cursor.execute(
-                "SELECT summary FROM document_summaries WHERE document_id = %s",
-                (doc_id,)
-            )
-            row = cursor.fetchone()
-            if row and row[0]:
-                conn.close()
-                return ToolResult(output=row[0], success=True, tool_name="summarize_document")
-
-            # No cache — fetch chunk texts for this document
             cursor.execute(
                 "SELECT text FROM chunks WHERE document_id = %s ORDER BY chunk_index ASC LIMIT 20",
                 (doc_id,)
@@ -295,7 +290,7 @@ def summarize_document(doc_id: str) -> ToolResult:
                 tool_name="summarize_document",
             )
 
-        # 2. Generate summary via LLM
+        # 3. Generate summary via LLM
         llm = get_shared_llm()
         if not llm:
             conn.close()
@@ -321,14 +316,8 @@ def summarize_document(doc_id: str) -> ToolResult:
         summary = response.response.strip() if response.response else None
 
         if summary:
-            # 3. Cache the summary
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO document_summaries (document_id, summary)
-                    VALUES (%s, %s)
-                    ON CONFLICT (document_id) DO UPDATE SET summary = EXCLUDED.summary
-                """, (doc_id, summary))
-            conn.commit()
+            # 4. Cache in Redis (best-effort)
+            set_cached_document_summary(doc_id, summary)
 
         conn.close()
         return ToolResult(output=summary, success=True, tool_name="summarize_document")

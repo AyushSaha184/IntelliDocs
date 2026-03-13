@@ -55,7 +55,8 @@ data/.parse_cache/
 .pytest_cache/
 .coverage
 htmlcov/
-tests/
+tests/*
+!tests/test_redis_cache_migration.py
 
 uninstall.txt
 server.bat
