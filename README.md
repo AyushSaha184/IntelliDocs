@@ -4,6 +4,14 @@ IntelliDocs is an AI-powered enterprise-scale Retrieval-Augmented Generation (RA
 
 **[🚀 Live Demo](https://intelli-docs-five.vercel.app)**
 
+### Architecture Diagram
+
+![Architecture Diagram](https://i.postimg.cc/Bn5gcDDq/Architecture-Diagram.png)
+
+### Data Flow Diagram
+
+![Data Flow Diagram](https://i.postimg.cc/Zn1cjxjg/Data-Flow-Diagram.png)
+
 ## Table of Contents
 
 - [Project Overview](#project-overview)
@@ -605,14 +613,6 @@ data/sessions/{session_id}/
 | **IngestSession** | `backend/rag/IngestSession.py` | Session ingestion: parallel load + retry embeddings + BM25 + FAISS/Qdrant + progress tracking |
 | **Backend API** | `backend/api/routes.py` | All FastAPI routes: session, chat, guest, ask/stream, review, eval, stress-test |
 | **Frontend** | `frontend/` | React 19 + Vite SPA; Supabase auth; multi-chat sidebar; multi-file upload; progress tracking |
-
-### Architecture Diagram
-
-![Architecture Diagram](https://i.postimg.cc/Bn5gcDDq/Architecture-Diagram.png)
-
-### Data Flow Diagram
-
-![Data Flow Diagram](https://i.postimg.cc/Zn1cjxjg/Data-Flow-Diagram.png)
 
 ## API Reference
 
