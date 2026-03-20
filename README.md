@@ -379,9 +379,8 @@ python main.py --test-query "What are the capabilities of this system?"
 ### Environment Variables
 
 ```bash
-# ── Embeddings ─────────────────────────────────────────────────────────
 NVIDIA_API_KEY=your_nvidia_api_key_here
-EMBEDDING_PROVIDER=nvidia            # nvidia | gemini | hf-inference | lm-studio | local
+EMBEDDING_PROVIDER=nvidia        
 EMBEDDING_MODEL=baai/bge-m3
 EMBEDDING_NORMALIZE=true
 EMBEDDING_TIMEOUT=120.0
@@ -393,56 +392,37 @@ REDIS_RETRIEVAL_TTL_SECONDS=1800
 REDIS_LLM_TTL_SECONDS=1800
 REDIS_EMBEDDING_TTL_SECONDS=604800
 
-# ── Retrieval ──────────────────────────────────────────────────────────
-RETRIEVAL_MODE=hybrid                # hybrid | dense
-# hybrid: BM25 + dense + RRF fusion (recommended)
-# dense:  FAISS-only (legacy mode)
+RETRIEVAL_MODE=hybrid 
 
-# ── Reranker ───────────────────────────────────────────────────────────
 USE_RERANKER=true
 RERANKER_MODEL=nv-rerank-qa-mistral-4b:1
-MIN_CHUNKS_TO_RERANK=8              # Only rerank when candidates exceed this
+MIN_CHUNKS_TO_RERANK=8     
 TOP_K_AFTER_RERANK=5
 
-# ── LLM ────────────────────────────────────────────────────────────────
-LLM_PROVIDER=openrouter              # openrouter | gemini | hf-inference | cerebras
+LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 LLM_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=1000
 
-# ── Validator / Judge LLM ──────────────────────────────────────────────
-JUDGE_PROVIDER=cerebras              # Provider for ValidatorAgent (fast secondary LLM)
+JUDGE_PROVIDER=cerebras 
 CEREBRAS_API_KEY=your_cerebras_api_key_here
 
-# ── Metadata Enrichment ────────────────────────────────────────────────
-ENABLE_CHUNK_ENRICHMENT=0            # 1 to enable async post-ingest enrichment
-
-# ── Database ───────────────────────────────────────────────────────────
 DATABASE_URL=postgresql://user:password@localhost:5432/rag_db
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=rag_db
 POSTGRES_USER=your_db_user
 POSTGRES_PASSWORD=your_db_password
-
-# ── Supabase Auth (optional — required for Google OAuth & email/password login) ──
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your_supabase_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-# Set SUPABASE_STORAGE_BUCKET to store uploaded files in Supabase Storage
-# instead of the local filesystem (required for multi-instance / Render deploys)
 SUPABASE_STORAGE_BUCKET=documents
-
-# ── Vector Backend ─────────────────────────────────────────────────────
-VECTOR_BACKEND=auto                  # auto | faiss | qdrant
-# auto: uses qdrant when QDRANT_URL is set and the DB host looks remote, else faiss
-
-# ── Qdrant (optional — for managed vector DB) ──────────────────────────
+VECTOR_BACKEND=auto
 QDRANT_URL=https://your-cluster.qdrant.io
 QDRANT_API_KEY=your_qdrant_api_key
 QDRANT_COLLECTION=chunk_embeddings
-QDRANT_DISTANCE=cosine               # cosine | dot | euclid
+QDRANT_DISTANCE=cosine
 QDRANT_TIMEOUT_SECONDS=10
 ```
 
@@ -576,46 +556,7 @@ data/sessions/{session_id}/
     vector_store/                    ← FAISS index + BM25 index
                                        (or Qdrant collection scoped by session_id)
 ```
-
-**Logged-in users — persistent multi-chat:**
-
-- Each conversation is a `Chat` DB row (`session_id`, `title`, `version`, `status`, `message_count`, `document_count`).
-- Full message history is stored in `ChatMessage` rows and reloaded when switching chats.
-- Document list per chat is stored in `Document` rows (filename, status, page count, token count).
-- Switching chats in the sidebar loads both the message history and the uploaded-files panel for that chat — state is always authoritative from the DB, never stale local state.
-- Chat titles, message counts, and document counts are shown live in the sidebar.
-- Rename and delete operations are version-guarded (optimistic concurrency, `SELECT ... FOR UPDATE`) to prevent stale-write corruption across tabs.
-- `BroadcastChannel('rag-assistant-chat-sync')` keeps multiple open browser tabs in sync without a websocket.
-
-**Guest users — ephemeral isolation:**
-
-- No sign-in required; a fresh `session_id` UUID is generated per browser tab on first upload.
-- Limit: **5 documents per chat**. Starting "New Chat" always generates a new `session_id`, giving a completely blank vector store and empty message history — no context leaks from previous chats.
-- All guest session data (files, index, DB rows) is deleted on tab close (`beforeunload`) and swept by the background `CleanupWorker` on its 60-second TTL sweep.
-
 **Shared singletons:** LLM, embedding service, and reranker are initialized once at server startup and safely reused across all sessions (read-only operations). The `CleanupWorker` runs every 60 seconds, processing deletion jobs for cascade-deleted chats and evicting TTL-expired guest session data.
-
-### Authentication & Multi-Chat
-
-**Auth Layer** (`backend/auth/supabase_auth.py`):
-
-- Verifies Supabase JWTs on every protected endpoint.
-- Anonymous / guest requests carry a generated `session_id` instead — validated without a real user token.
-- Google OAuth and email/password sign-in are both supported via Supabase.
-
-**Multi-Chat** (logged-in users only):
-
-- Each conversation is a `Chat` row with its own `session_id`, title, version counter, and status.
-- Switching chats loads the full message history and document list from the database.
-- Chat titles, message counts, and document counts are exposed in the sidebar.
-- Rename and delete are version-guarded (optimistic concurrency) to prevent stale-write corruption.
-- `BroadcastChannel('rag-assistant-chat-sync')` keeps multiple open tabs consistent without a websocket.
-
-**Guest Mode**:
-
-- No sign-in required — guests get a randomly generated `session_id` per tab.
-- Limit: **5 documents per chat**. Starting a new chat always creates a fresh isolated context.
-- Guest session data is deleted on tab close (`beforeunload`) and swept by the background worker.
 
 ## Architecture
 
